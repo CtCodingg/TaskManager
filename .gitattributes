@@ -1,0 +1,34 @@
+# Normalize line endings for this cross-platform project. Git stores
+# everything as LF internally regardless of the values below; "text=auto"
+# only controls what's checked OUT into your working directory.
+#
+# We force LF on checkout for all source files too (even on Windows), so
+# the repo stays consistent for Linux/Jetson builds and diffs don't get
+# polluted by line-ending-only changes. MSVC, VS Code, and Visual Studio
+# all handle LF-only C++ files without issue.
+
+* text=auto eol=lf
+
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.qrc text eol=lf
+*.qss text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+
+# Windows-native files that genuinely want CRLF
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.bat text eol=crlf
+
+# Binaries -- never touch these
+*.png binary
+*.ico binary
+*.zip binary
+*.exe binary
+*.dll binary
