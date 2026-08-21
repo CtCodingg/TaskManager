@@ -2,6 +2,7 @@
 #include "ProcessModel.h"
 #include "HistoryChartWidget.h"
 #include "FormatUtils.h"
+#include "UiTheme.h"
 
 #include <QTableView>
 #include <QHeaderView>
@@ -23,18 +24,13 @@
 #include <QStatusBar>
 #include <QPushButton>
 #include <QTableWidgetItem>
+#include <QStyle>
+#include <QBrush>
+#include <QColor>
 
 namespace {
 constexpr int kProcessPollMs = 1500;
 constexpr int kStatsPollMs = 1000;
-
-QColor colorForIndex(int i) {
-    static const QColor palette[] = {
-        QColor("#4C9AFF"), QColor("#F97066"), QColor("#36B37E"),
-        QColor("#FFAB00"), QColor("#9C6ADE"), QColor("#00B8D9")
-    };
-    return palette[i % 6];
-}
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -77,9 +73,12 @@ QWidget* MainWindow::buildProcessesTab() {
     connect(m_filterEdit, &QLineEdit::textChanged, this, &MainWindow::onProcessFilterChanged);
 
     auto* killButton = new QPushButton("End Task");
+    killButton->setObjectName("endTaskButton");
     connect(killButton, &QPushButton::clicked, this, &MainWindow::onKillSelectedProcess);
 
-    topBar->addWidget(new QLabel("Search:"));
+    auto* searchLabel = new QLabel("Search:");
+    searchLabel->setObjectName("metricSubtle");
+    topBar->addWidget(searchLabel);
     topBar->addWidget(m_filterEdit, 1);
     topBar->addWidget(killButton);
     layout->addLayout(topBar);
@@ -107,6 +106,7 @@ QWidget* MainWindow::buildProcessesTab() {
     layout->addWidget(m_processTable, 1);
 
     m_processSummaryLabel = new QLabel("0 processes");
+    m_processSummaryLabel->setObjectName("metricSubtle");
     layout->addWidget(m_processSummaryLabel);
 
     return container;
@@ -121,11 +121,13 @@ QWidget* MainWindow::buildPerformanceTab() {
 
     // --- CPU group ---
     auto* cpuGroup = new QGroupBox("CPU");
+    cpuGroup->setObjectName("cpuCard");
     auto* cpuLayout = new QVBoxLayout(cpuGroup);
     auto* cpuHeaderRow = new QHBoxLayout();
     m_cpuTotalLabel = new QLabel("0.0%");
-    m_cpuTotalLabel->setStyleSheet("font-size: 20px; font-weight: 600;");
+    m_cpuTotalLabel->setObjectName("metricValue");
     m_cpuTempLabel = new QLabel("Temp: n/a");
+    m_cpuTempLabel->setObjectName("metricSubtle");
     cpuHeaderRow->addWidget(m_cpuTotalLabel);
     cpuHeaderRow->addStretch();
     cpuHeaderRow->addWidget(m_cpuTempLabel);
@@ -133,37 +135,40 @@ QWidget* MainWindow::buildPerformanceTab() {
 
     m_cpuChart = new HistoryChartWidget("CPU Load (%)", 120);
     m_cpuChart->setYRange(0, 100);
-    m_cpuChart->addSeries("Total", colorForIndex(0));
+    m_cpuChart->addSeries("Total", UiTheme::accentCpu());
     cpuLayout->addWidget(m_cpuChart);
 
     m_coreBarContainer = new QWidget();
     auto* coreGrid = new QGridLayout(m_coreBarContainer);
-    coreGrid->setSpacing(4);
+    coreGrid->setSpacing(6);
     cpuLayout->addWidget(m_coreBarContainer);
 
     layout->addWidget(cpuGroup);
 
     // --- Memory group ---
     auto* memGroup = new QGroupBox("Memory");
+    memGroup->setObjectName("memCard");
     auto* memLayout = new QVBoxLayout(memGroup);
     m_memLabel = new QLabel("0 / 0 GB");
-    m_memLabel->setStyleSheet("font-size: 16px; font-weight: 600;");
+    m_memLabel->setObjectName("metricValue");
     m_memBar = new QProgressBar();
     m_memBar->setRange(0, 100);
     m_swapLabel = new QLabel("Swap: 0 / 0 GB");
+    m_swapLabel->setObjectName("metricSubtle");
     memLayout->addWidget(m_memLabel);
     memLayout->addWidget(m_memBar);
     memLayout->addWidget(m_swapLabel);
 
     m_memChart = new HistoryChartWidget("Memory Usage (%)", 120);
     m_memChart->setYRange(0, 100);
-    m_memChart->addSeries("Used", colorForIndex(1));
+    m_memChart->addSeries("Used", UiTheme::accentMemory());
     memLayout->addWidget(m_memChart);
 
     layout->addWidget(memGroup);
 
     // --- GPU group ---
     auto* gpuGroup = new QGroupBox("GPU");
+    gpuGroup->setObjectName("gpuCard");
     auto* gpuLayout = new QVBoxLayout(gpuGroup);
     m_gpuContainer = new QWidget();
     auto* gpuGrid = new QVBoxLayout(m_gpuContainer);
@@ -177,6 +182,7 @@ QWidget* MainWindow::buildPerformanceTab() {
 
     // --- Disk group ---
     auto* diskGroup = new QGroupBox("Disks");
+    diskGroup->setObjectName("diskCard");
     auto* diskLayout = new QVBoxLayout(diskGroup);
 
     m_diskTable = new QTableWidget(0, 5);
@@ -184,8 +190,11 @@ QWidget* MainWindow::buildPerformanceTab() {
     m_diskTable->horizontalHeader()->setStretchLastSection(true);
     m_diskTable->verticalHeader()->setVisible(false);
     m_diskTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_diskTable->setAlternatingRowColors(true);
     m_diskTable->setMinimumHeight(140);
-    diskLayout->addWidget(new QLabel("Volumes"));
+    auto* volumesLabel = new QLabel("Volumes");
+    volumesLabel->setObjectName("sectionHint");
+    diskLayout->addWidget(volumesLabel);
     diskLayout->addWidget(m_diskTable);
 
     m_diskIoTable = new QTableWidget(0, 4);
@@ -193,8 +202,11 @@ QWidget* MainWindow::buildPerformanceTab() {
     m_diskIoTable->horizontalHeader()->setStretchLastSection(true);
     m_diskIoTable->verticalHeader()->setVisible(false);
     m_diskIoTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_diskIoTable->setAlternatingRowColors(true);
     m_diskIoTable->setMinimumHeight(120);
-    diskLayout->addWidget(new QLabel("I/O Activity"));
+    auto* ioLabel = new QLabel("I/O Activity");
+    ioLabel->setObjectName("sectionHint");
+    diskLayout->addWidget(ioLabel);
     diskLayout->addWidget(m_diskIoTable);
 
     layout->addWidget(diskGroup);
@@ -209,13 +221,13 @@ QWidget* MainWindow::buildNetworkTab() {
     auto* layout = new QVBoxLayout(container);
 
     m_networkTotalsLabel = new QLabel("Total: ↓ 0 B/s   ↑ 0 B/s");
-    m_networkTotalsLabel->setStyleSheet("font-size: 16px; font-weight: 600;");
+    m_networkTotalsLabel->setObjectName("metricValue");
     layout->addWidget(m_networkTotalsLabel);
 
     m_networkChart = new HistoryChartWidget("Total Bandwidth", 120);
     m_networkChart->setYAutoScale(true);
-    m_netRxSeriesIndex = m_networkChart->addSeries("Download (B/s)", colorForIndex(0));
-    m_netTxSeriesIndex = m_networkChart->addSeries("Upload (B/s)", colorForIndex(1));
+    m_netRxSeriesIndex = m_networkChart->addSeries("Download (B/s)", UiTheme::accentNetRx());
+    m_netTxSeriesIndex = m_networkChart->addSeries("Upload (B/s)", UiTheme::accentNetTx());
     layout->addWidget(m_networkChart);
 
     m_networkTable = new QTableWidget(0, 11);
@@ -233,7 +245,7 @@ QWidget* MainWindow::buildNetworkTab() {
     auto* hint = new QLabel(
         "Drop % / Error % are computed per poll interval as "
         "(dropped or errored packets) / (successful + dropped) × 100.");
-    hint->setStyleSheet("color: gray;");
+    hint->setObjectName("sectionHint");
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
@@ -305,6 +317,7 @@ void MainWindow::updateCpuUi(const CpuStats& cpu) {
     }
     for (int i = 0; i < cpu.perCore.size() && i < m_coreBars.size(); ++i) {
         m_coreBars[i]->setValue(int(cpu.perCore[i].percent));
+        applyBarLevel(m_coreBars[i], cpu.perCore[i].percent);
     }
 }
 
@@ -314,6 +327,7 @@ void MainWindow::updateMemoryUi(const MemoryStats& mem) {
         .arg(FormatUtils::bytes(mem.totalBytes))
         .arg(FormatUtils::percent(mem.usedPercent())));
     m_memBar->setValue(int(mem.usedPercent()));
+    applyBarLevel(m_memBar, mem.usedPercent());
     m_swapLabel->setText(QString("Swap: %1 / %2")
         .arg(FormatUtils::bytes(mem.swapUsedBytes))
         .arg(FormatUtils::bytes(mem.swapTotalBytes)));
@@ -328,7 +342,9 @@ void MainWindow::updateDiskUi(const QVector<DiskVolume>& volumes, const QVector<
         m_diskTable->setItem(i, 1, new QTableWidgetItem(v.fsType));
         m_diskTable->setItem(i, 2, new QTableWidgetItem(FormatUtils::bytes(v.usedBytes)));
         m_diskTable->setItem(i, 3, new QTableWidgetItem(FormatUtils::bytes(v.totalBytes)));
-        m_diskTable->setItem(i, 4, new QTableWidgetItem(FormatUtils::percent(v.usedPercent())));
+        auto* usageItem = new QTableWidgetItem(FormatUtils::percent(v.usedPercent()));
+        usageItem->setForeground(QBrush(UiTheme::colorForPercent(v.usedPercent())));
+        m_diskTable->setItem(i, 4, usageItem);
     }
 
     m_diskIoTable->setRowCount(io.size());
@@ -337,7 +353,9 @@ void MainWindow::updateDiskUi(const QVector<DiskVolume>& volumes, const QVector<
         m_diskIoTable->setItem(i, 0, new QTableWidgetItem(d.device));
         m_diskIoTable->setItem(i, 1, new QTableWidgetItem(FormatUtils::bytesPerSec(d.readBytesPerSec)));
         m_diskIoTable->setItem(i, 2, new QTableWidgetItem(FormatUtils::bytesPerSec(d.writeBytesPerSec)));
-        m_diskIoTable->setItem(i, 3, new QTableWidgetItem(FormatUtils::percent(d.utilizationPercent)));
+        auto* utilItem = new QTableWidgetItem(FormatUtils::percent(d.utilizationPercent));
+        utilItem->setForeground(QBrush(UiTheme::colorForPercent(d.utilizationPercent)));
+        m_diskIoTable->setItem(i, 3, utilItem);
     }
 }
 
@@ -346,7 +364,7 @@ void MainWindow::updateGpuUi(const QVector<GpuInfo>& gpus) {
         if (m_gpuPanels.isEmpty()) {
             auto* layout = qobject_cast<QVBoxLayout*>(m_gpuContainer->layout());
             auto* label = new QLabel("No supported GPU backend detected on this system.");
-            label->setStyleSheet("color: gray;");
+            label->setObjectName("metricSubtle");
             layout->addWidget(label);
             m_gpuPanels.push_back(label);
         }
@@ -354,7 +372,7 @@ void MainWindow::updateGpuUi(const QVector<GpuInfo>& gpus) {
     }
 
     if (m_gpuChartSeriesIndex < 0) {
-        m_gpuChartSeriesIndex = m_gpuChart->addSeries(gpus[0].name, colorForIndex(2));
+        m_gpuChartSeriesIndex = m_gpuChart->addSeries(gpus[0].name, UiTheme::accentGpu());
     }
 
     if (m_gpuPanels.size() != gpus.size()) {
@@ -402,12 +420,25 @@ void MainWindow::updateNetworkUi(const NetworkStats& net) {
     m_networkChart->pushValue(m_netRxSeriesIndex, double(net.totalRxBytesPerSec));
     m_networkChart->pushValue(m_netTxSeriesIndex, double(net.totalTxBytesPerSec));
 
+    // Drop/error percentages are usually 0 on a healthy link, so color is
+    // reserved for when something actually needs attention: neutral gray
+    // at 0%, escalating through warn/critical as the rate climbs.
+    auto colorForRate = [](double percent) -> QColor {
+        if (percent <= 0.0) return UiTheme::textSecondary();
+        if (percent >= 1.0) return UiTheme::levelCritical();
+        return UiTheme::levelWarn();
+    };
+
     m_networkTable->setRowCount(net.interfaces.size());
     for (int i = 0; i < net.interfaces.size(); ++i) {
         const NetworkInterfaceStats& ifs = net.interfaces[i];
         int col = 0;
         m_networkTable->setItem(i, col++, new QTableWidgetItem(ifs.name));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(ifs.isUp ? "Up" : "Down"));
+
+        auto* statusItem = new QTableWidgetItem(ifs.isUp ? "Up" : "Down");
+        statusItem->setForeground(QBrush(ifs.isUp ? UiTheme::levelGood() : UiTheme::textTertiary()));
+        m_networkTable->setItem(i, col++, statusItem);
+
         m_networkTable->setItem(i, col++, new QTableWidgetItem(ifs.ipv4Address));
         m_networkTable->setItem(i, col++, new QTableWidgetItem(
             ifs.linkSpeedMbps ? QString("%1 Mbps").arg(ifs.linkSpeedMbps) : "n/a"));
@@ -415,10 +446,16 @@ void MainWindow::updateNetworkUi(const NetworkStats& net) {
         m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::bytesPerSec(ifs.txBytesPerSec)));
         m_networkTable->setItem(i, col++, new QTableWidgetItem(
             ifs.linkSpeedMbps ? FormatUtils::percent(ifs.utilizationPercent) : "n/a"));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::percent(ifs.rxDropPercent, 3)));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::percent(ifs.txDropPercent, 3)));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::percent(ifs.rxErrorPercent, 3)));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::percent(ifs.txErrorPercent, 3)));
+
+        auto addRateCell = [&](double percent) {
+            auto* item = new QTableWidgetItem(FormatUtils::percent(percent, 3));
+            item->setForeground(QBrush(colorForRate(percent)));
+            m_networkTable->setItem(i, col++, item);
+        };
+        addRateCell(ifs.rxDropPercent);
+        addRateCell(ifs.txDropPercent);
+        addRateCell(ifs.rxErrorPercent);
+        addRateCell(ifs.txErrorPercent);
     }
 }
 
@@ -454,4 +491,14 @@ void MainWindow::onProcessContextMenu(const QPoint& pos) {
     QAction* killAction = menu.addAction("End Task");
     QAction* chosen = menu.exec(m_processTable->viewport()->mapToGlobal(pos));
     if (chosen == killAction) onKillSelectedProcess();
+}
+
+void MainWindow::applyBarLevel(QProgressBar* bar, double percent) {
+    if (!bar) return;
+    const QString level = UiTheme::levelNameForPercent(percent);
+    if (bar->property("level").toString() == level) return; // avoid needless re-polish
+    bar->setProperty("level", level);
+    bar->style()->unpolish(bar);
+    bar->style()->polish(bar);
+    bar->update();
 }

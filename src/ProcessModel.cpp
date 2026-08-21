@@ -1,6 +1,9 @@
 #include "ProcessModel.h"
 #include "FormatUtils.h"
+#include "UiTheme.h"
 
+#include <QFont>
+#include <QBrush>
 #include <algorithm>
 
 ProcessModel::ProcessModel(QObject* parent) : QAbstractTableModel(parent) {}
@@ -32,6 +35,21 @@ int ProcessModel::columnCount(const QModelIndex& parent) const {
     return ColumnCount;
 }
 
+namespace {
+
+// State text is platform-specific (Linux: Running/Sleeping/Zombie/...,
+// Windows: mostly "Running") -- color by the parts of that vocabulary
+// that signal something worth noticing, and leave everything else at the
+// neutral secondary text color.
+QColor colorForState(const QString& state) {
+    if (state == "Running") return UiTheme::levelGood();
+    if (state == "Zombie" || state == "Dead") return UiTheme::levelCritical();
+    if (state == "Stopped" || state == "Tracing Stop") return UiTheme::levelWarn();
+    return UiTheme::textSecondary(); // Sleeping, Disk Wait, Idle, Unknown, ...
+}
+
+} // namespace
+
 QVariant ProcessModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || index.row() >= m_processes.size()) return QVariant();
     const ProcessInfo& p = m_processes[index.row()];
@@ -42,6 +60,29 @@ QVariant ProcessModel::data(const QModelIndex& index, int role) const {
                 return int(Qt::AlignRight | Qt::AlignVCenter);
             default:
                 return int(Qt::AlignLeft | Qt::AlignVCenter);
+        }
+    }
+
+    if (role == Qt::ForegroundRole) {
+        switch (index.column()) {
+            case ColCpu:
+                return QBrush(UiTheme::colorForPercent(p.cpuPercent));
+            case ColState:
+                return QBrush(colorForState(p.state));
+            default:
+                return QVariant();
+        }
+    }
+
+    if (role == Qt::FontRole) {
+        switch (index.column()) {
+            case ColPid: case ColCpu: case ColMemRss: case ColThreads: case ColNice: {
+                QFont f("Consolas");
+                f.setStyleHint(QFont::Monospace);
+                return f;
+            }
+            default:
+                return QVariant();
         }
     }
 

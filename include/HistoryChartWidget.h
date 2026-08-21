@@ -16,14 +16,14 @@
 #if QT_VERSION_MAJOR >= 6
 class QChart;
 class QChartView;
-class QLineSeries;
+class QXYSeries;
 class QValueAxis;
 #else
 QT_BEGIN_NAMESPACE
 namespace QtCharts {
     class QChart;
     class QChartView;
-    class QLineSeries;
+    class QXYSeries;
     class QValueAxis;
 }
 QT_END_NAMESPACE
@@ -32,7 +32,8 @@ using namespace QtCharts;
 
 // A small rolling line-chart widget used for CPU / RAM / Network history
 // sparkline-style panels. Supports 1..N series sharing one 0-100 (or custom)
-// Y axis and a fixed-length rolling X window.
+// Y axis and a fixed-length rolling X window. Renders as a smoothed spline
+// in a dark "telemetry" style matching the rest of the UI.
 class HistoryChartWidget : public QWidget {
     Q_OBJECT
 public:
@@ -45,7 +46,7 @@ public:
 
 private:
     struct SeriesData {
-        QLineSeries* line = nullptr;
+        QXYSeries* line = nullptr; // actually a QSplineSeries instance, see .cpp
         QVector<double> values;
     };
 

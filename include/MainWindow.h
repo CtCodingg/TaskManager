@@ -91,4 +91,9 @@ private:
     void updateDiskUi(const QVector<DiskVolume>& volumes, const QVector<DiskIoStats>& io);
     void updateGpuUi(const QVector<GpuInfo>& gpus);
     void updateNetworkUi(const NetworkStats& net);
+
+    // Sets the QProgressBar's "level" dynamic property (good/warn/critical)
+    // from a 0-100 percentage and re-polishes it so the QSS
+    // QProgressBar[level=...] color rule picks it up immediately.
+    static void applyBarLevel(QProgressBar* bar, double percent);
 };

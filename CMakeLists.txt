@@ -73,6 +73,7 @@ set(TM_HEADERS
     include/GpuStatsCollector.h
     include/HistoryChartWidget.h
     include/FormatUtils.h
+    include/UiTheme.h
     include/Types.h
 )
 
