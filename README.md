@@ -63,6 +63,7 @@ builds and runs fine on machines without an NVIDIA driver.
 | Flag | Effect |
 |---|---|
 | *(none)* | Normal startup. No admin/elevated rights required on either platform. |
+| `-h`, `--help` | Prints usage information (including the `--track-bandwidth` details below) to the terminal and exits immediately — no window opens. |
 | `--track-bandwidth` | Adds the **Bandwidth** tab (per-process download/upload, TCP + UDP). On Windows, if not already running elevated, the app relaunches itself with a UAC prompt (cancelling falls back to a normal, non-elevated launch without the tab). On Linux, TCP works without any special privileges; UDP additionally needs root or `CAP_NET_RAW` on the binary — without it, the Bandwidth tab still opens with TCP data and a status message explaining UDP is unavailable. |
 
 ```bash

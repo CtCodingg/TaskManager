@@ -9,6 +9,7 @@
 #include <QFont>
 #include <QString>
 #include <string>
+#include <iostream>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -58,19 +59,63 @@ QPalette buildDarkPalette() {
     return p;
 }
 
-// The one command-line flag this app recognizes: opts into the
-// per-process Bandwidth tab (see ProcessBandwidthCollector). Deliberately
-// NOT the default, since on Windows it requires elevation (a UAC prompt)
-// -- see relaunchElevated() below. Everything else about normal operation
-// (Processes/Performance/Network/Connections tabs) never needs admin
-// rights, on either platform.
+// The command-line flags this app recognizes. --track-bandwidth opts into
+// the per-process Bandwidth tab (see ProcessBandwidthCollector).
+// Deliberately NOT the default, since on Windows it requires elevation (a
+// UAC prompt) -- see relaunchElevated() below. Everything else about
+// normal operation (Processes/Performance/Network/Connections tabs) never
+// needs admin rights, on either platform.
 constexpr const char* kTrackBandwidthFlag = "--track-bandwidth";
+constexpr const char* kHelpFlagLong = "--help";
+constexpr const char* kHelpFlagShort = "-h";
 
-bool parseTrackBandwidthFlag(int argc, char* argv[]) {
+bool hasFlag(int argc, char* argv[], const char* flag) {
     for (int i = 1; i < argc; ++i) {
-        if (QString::fromLocal8Bit(argv[i]) == kTrackBandwidthFlag) return true;
+        if (QString::fromLocal8Bit(argv[i]) == flag) return true;
     }
     return false;
+}
+
+bool parseTrackBandwidthFlag(int argc, char* argv[]) {
+    return hasFlag(argc, argv, kTrackBandwidthFlag);
+}
+
+bool parseHelpFlag(int argc, char* argv[]) {
+    return hasFlag(argc, argv, kHelpFlagLong) || hasFlag(argc, argv, kHelpFlagShort);
+}
+
+void printHelp() {
+    std::cout <<
+        "TaskManager -- cross-platform system monitor\n"
+        "\n"
+        "Usage: TaskManager [options]\n"
+        "\n"
+        "Options:\n"
+        "  -h, --help          Show this help message and exit.\n"
+        "\n"
+        "  --track-bandwidth   Enable the Bandwidth tab (per-process download/\n"
+        "                      upload, TCP + UDP).\n"
+        "\n"
+        "                      Windows: requires Administrator rights and\n"
+        "                      triggers a UAC prompt on launch; cancelling the\n"
+        "                      prompt falls back to a normal launch without the\n"
+        "                      tab, rather than refusing to start.\n"
+        "\n"
+        "                      Linux: TCP works without elevation. UDP\n"
+        "                      additionally needs root or the CAP_NET_RAW\n"
+        "                      capability on the binary, e.g.:\n"
+        "                        sudo setcap cap_net_raw+ep <path-to-TaskManager>\n"
+        "                      Without it, the Bandwidth tab still opens with\n"
+        "                      TCP data and a status note explaining why UDP\n"
+        "                      is unavailable.\n"
+        "\n"
+        "Without any options, TaskManager starts normally with the Processes,\n"
+        "Performance, Network, and Connections tabs. No admin/elevated rights\n"
+        "are required for normal operation on either platform.\n"
+        "\n"
+        "The data rate display unit (bits or bytes) and the UI refresh rate\n"
+        "can be changed at any time from the Settings menu inside the app.\n"
+        << std::flush;
 }
 
 #ifdef Q_OS_WIN
@@ -125,6 +170,11 @@ bool relaunchElevated(int argc, char* argv[]) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    if (parseHelpFlag(argc, argv)) {
+        printHelp();
+        return 0;
+    }
+
     bool trackBandwidth = parseTrackBandwidthFlag(argc, argv);
 
 #ifdef Q_OS_WIN
