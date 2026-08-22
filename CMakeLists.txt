@@ -17,6 +17,29 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+# Keep moc_*.cpp / qrc_*.cpp / ui_*.h etc. out of the way in IDEs that show
+# a source tree (Visual Studio's Solution Explorer, in particular): group
+# every AUTOMOC/AUTOUIC/AUTORCC-generated file under a single virtual
+# "Generated Files" filter instead of interleaving them with real source
+# files. This only affects IDE presentation -- the files still physically
+# live under build/TaskManager_autogen/, never next to the real sources on
+# disk. Setting all four (general + the three tool-specific ones) covers
+# CMake-version differences in which variable actually takes effect.
+set(CMAKE_AUTOGEN_SOURCE_GROUP "Generated Files")
+set(CMAKE_AUTOMOC_SOURCE_GROUP "Generated Files")
+set(CMAKE_AUTOUIC_SOURCE_GROUP "Generated Files")
+set(CMAKE_AUTORCC_SOURCE_GROUP "Generated Files")
+
+# Tidy up Visual Studio's Solution Explorer at the PROJECT level too: CMake
+# creates separate helper projects for ALL_BUILD/ZERO_CHECK/INSTALL, and
+# for each AUTOMOC/AUTOUIC/AUTORCC-enabled target, a "<target>_autogen" /
+# "<target>_autogen_timestamp_<Config>" utility project. These aren't
+# files a source_group can hide -- they're their own projects -- so they
+# need Solution Folders instead. TaskManager's own AUTOGEN_TARGETS_FOLDER
+# is set on the target itself further below, after add_executable().
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CMAKE_PREDEFINED_TARGETS_FOLDER "CMakePredefinedTargets")
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
@@ -104,6 +127,13 @@ elseif(UNIX)
 endif()
 
 add_executable(TaskManager ${TM_SOURCES} ${TM_HEADERS} resources/resources.qrc)
+
+# Collapses the "TaskManager_autogen" and "TaskManager_autogen_timestamp_
+# <Config>" helper projects (created because AUTOMOC/AUTOUIC/AUTORCC are
+# enabled above) into a "CMakeAutogenTargets" solution folder in Visual
+# Studio's Solution Explorer, instead of leaving them as top-level
+# projects next to TaskManager itself.
+set_target_properties(TaskManager PROPERTIES AUTOGEN_TARGETS_FOLDER "CMakeAutogenTargets")
 
 target_include_directories(TaskManager PRIVATE
     ${CMAKE_SOURCE_DIR}/include
