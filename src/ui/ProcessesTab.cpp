@@ -22,7 +22,7 @@ bool matchesFilter(const ProcessInfo& p, const std::string& needleLower) {
 
 ImVec4 toImVec4(Theme::Rgb c, float a = 1.0f) { return ImVec4(c.r, c.g, c.b, a); }
 
-// Same semantics as ProcessModel::colorForState() in the Qt edition.
+// Colors a process row's state text by what it signals.
 Theme::Rgb colorForState(const std::string& state) {
     if (state == "Running") return {0.204f, 0.827f, 0.600f};   // good/green
     if (state == "Zombie" || state == "Dead") return {0.973f, 0.443f, 0.443f}; // critical/red
@@ -34,6 +34,13 @@ Theme::Rgb colorForState(const std::string& state) {
 
 void ProcessesTab::updateData(std::vector<ProcessInfo> processes) {
     m_processes = std::move(processes);
+}
+
+std::string ProcessesTab::nameForPid(int64_t pid) const {
+    for (const auto& p : m_processes) {
+        if (p.pid == pid) return p.name;
+    }
+    return "(pid " + std::to_string(pid) + ")";
 }
 
 void ProcessesTab::applySort(ImGuiTableSortSpecs* sortSpecs) {

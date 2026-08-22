@@ -1,5 +1,4 @@
-// Qt-free port of the Qt edition's ProcessBackendLinux.cpp. Same /proc
-// parsing logic, QString/QVector/QMap swapped for std:: equivalents.
+// Process enumeration and control via /proc.
 
 #include "ProcessCollector.h"
 
@@ -229,7 +228,7 @@ std::vector<ThreadInfo> ProcessCollector::collectThreads(int64_t pid) {
         t.name = stat.comm;
         t.state = stateToText(stat.state);
         t.priority = static_cast<int>(stat.priority);
-        t.cpuPercent = 0.0; // per-thread deltas not tracked, same as Qt edition
+        t.cpuPercent = 0.0; // per-thread deltas not tracked
         threads.push_back(std::move(t));
     }
     closedir(dir);

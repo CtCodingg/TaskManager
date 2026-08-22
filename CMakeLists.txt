@@ -9,18 +9,18 @@ cmake_policy(SET CMP0091 NEW)
 
 project(CtTaskManager
     VERSION 0.1.0
-    DESCRIPTION "Cross-platform Task Manager -- Dear ImGui edition (no Qt)"
+    DESCRIPTION "Cross-platform Task Manager"
     LANGUAGES CXX
 )
 
 # Statically link the MSVC C/C++ runtime (/MT, /MTd for Debug) instead of
 # the default /MD, /MDd. Result: the .exe needs no vcruntime140.dll /
 # msvcp140.dll / ucrtbase.dll on the target machine -- it's fully
-# self-contained, matching this project's "no external dependencies"
-# goal now that Qt (and windeployqt) are gone. Must be set BEFORE the
-# FetchContent_MakeAvailable() calls below, so glfw/imgui/implot are all
-# built with the same runtime setting -- a mismatch between static libs
-# built with /MT vs /MD causes LNK2038 "mismatch detected" errors.
+# self-contained, matching this project's "no external dependencies" goal.
+# Must be set BEFORE the FetchContent_MakeAvailable() calls below, so
+# glfw/imgui/implot are all built with the same runtime setting -- a
+# mismatch between static libs built with /MT vs /MD causes LNK2038
+# "mismatch detected" errors.
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -42,7 +42,7 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Third-party sources, fetched at configure time (no system install needed).
-# All MIT/zlib-licensed
+# All MIT/zlib-licensed -- no GPL/LGPL entanglement.
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
@@ -100,16 +100,61 @@ set(TM_SOURCES
     src/App.cpp
     src/Theme.cpp
     src/ui/ProcessesTab.cpp
+    src/ui/PerformanceTab.cpp
+    src/ui/NetworkTab.cpp
+    src/ui/ConnectionsTab.cpp
+    src/ui/BandwidthTab.cpp
+    src/ui/SettingsWindow.cpp
+    src/ui/AboutWindow.cpp
     src/backend/FormatUtils.cpp
 )
 
+set(TM_HEADERS
+    src/App.h
+    src/Theme.h
+    src/backend/FormatUtils.h
+    src/backend/GpuStatsCollector.h
+    src/backend/NetworkStatsCollector.h
+    src/backend/ProcessBandwidthCollector.h
+    src/backend/ProcessCollector.h
+    src/backend/ProcessConnectionCollector.h
+    src/backend/SystemStatsCollector.h
+    src/backend/Types.h
+    src/ui/AboutWindow.h
+    src/ui/BandwidthTab.h
+    src/ui/ConnectionsTab.h
+    src/ui/HistoryChart.h
+    src/ui/NetworkTab.h
+    src/ui/PerformanceTab.h
+    src/ui/ProcessesTab.h
+    src/ui/SettingsWindow.h
+)
+
 if(WIN32)
-    list(APPEND TM_SOURCES src/backend/platform/win/ProcessBackendWin.cpp)
+    list(APPEND TM_SOURCES
+        src/backend/platform/win/ProcessBackendWin.cpp
+        src/backend/platform/win/SystemBackendWin.cpp
+        src/backend/platform/win/GpuBackendWin.cpp
+        src/backend/platform/win/NetworkBackendWin.cpp
+        src/backend/platform/win/ProcessConnectionBackendWin.cpp
+        src/backend/platform/win/ProcessBandwidthBackendWin.cpp
+    )
 elseif(UNIX)
-    list(APPEND TM_SOURCES src/backend/platform/linux/ProcessBackendLinux.cpp)
+    list(APPEND TM_SOURCES
+        src/backend/platform/linux/ProcessBackendLinux.cpp
+        src/backend/platform/linux/SystemBackendLinux.cpp
+        src/backend/platform/linux/GpuBackendLinux.cpp
+        src/backend/platform/linux/NetworkBackendLinux.cpp
+        src/backend/platform/linux/ProcessConnectionBackendLinux.cpp
+        src/backend/platform/linux/ProcessBandwidthBackendLinux.cpp
+    )
 endif()
 
-add_executable(CtTaskManager ${TM_SOURCES})
+add_executable(CtTaskManager ${TM_SOURCES} ${TM_HEADERS})
+
+# Mirrors the src/ folder structure (ui/, backend/, backend/platform/...)
+# as filters in Visual Studio's Solution Explorer instead of one flat list.
+source_group(TREE ${CMAKE_SOURCE_DIR}/src FILES ${TM_SOURCES} ${TM_HEADERS})
 
 target_include_directories(CtTaskManager PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -120,10 +165,14 @@ target_link_libraries(CtTaskManager PRIVATE imgui implot)
 
 target_compile_definitions(CtTaskManager PRIVATE
     $<$<BOOL:${TM_IS_JETSON}>:TM_IS_JETSON>
+    TM_VERSION_STRING="${PROJECT_VERSION}"
 )
 
 if(WIN32)
-    target_link_libraries(CtTaskManager PRIVATE opengl32 psapi)
+    # pdh: CPU/GPU perf counters. iphlpapi/ws2_32: network + connections +
+    # TCP EStats. psapi: process memory info. shell32: --track-bandwidth
+    # UAC elevation prompt. tdh: ETW event decoding (UDP bandwidth).
+    target_link_libraries(CtTaskManager PRIVATE pdh iphlpapi ws2_32 psapi shell32 tdh opengl32)
     target_compile_definitions(CtTaskManager PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 elseif(UNIX AND NOT APPLE)
     find_package(OpenGL REQUIRED)
@@ -146,9 +195,12 @@ endif()
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-# GLFW is fetched and linked as a STATIC library by default (FetchContent
-# above doesn't set BUILD_SHARED_LIBS), so there are no runtime DLLs to deploy
-# alongside the executable -- OpenGL itself is a system driver library on
-# every target platform (opengl32.dll on Windows, libGL on Linux/Jetson).
+# No separate DLL-deployment step needed: GLFW is fetched and linked as a
+# STATIC library by default (FetchContent above doesn't set
+# BUILD_SHARED_LIBS), so there are no runtime DLLs to deploy alongside the
+# executable -- OpenGL itself is a system driver library on every target
+# platform (opengl32.dll on Windows, libGL on Linux/Jetson).
 include(GNUInstallDirs)
 install(TARGETS CtTaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+message(STATUS "CtTaskManager: GLFW+Dear ImGui+ImPlot fetched via FetchContent")

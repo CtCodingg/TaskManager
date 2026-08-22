@@ -4,9 +4,8 @@
 #include <string>
 #include <vector>
 
-// Same shape as the Qt version's Types.h, but QString -> std::string,
-// QVector -> std::vector, quint64/qint64 -> uint64_t/int64_t. Semantics
-// are otherwise identical -- see the original for field-by-field comments.
+// Shared data structs: std::string/std::vector/std::map, no external
+// dependencies.
 
 struct ThreadInfo {
     int64_t tid = 0;

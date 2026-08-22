@@ -15,14 +15,122 @@
 // matches Dear ImGui's own official example_glfw_opengl3/main.cpp.
 #include <GLFW/glfw3.h>
 #include <cstdio>
+#include <iostream>
+#include <string>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 namespace {
+
 void glfwErrorCallback(int error, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
+
+// Command-line flags this app recognizes.
+constexpr const char* kTrackBandwidthFlag = "--track-bandwidth";
+constexpr const char* kHelpFlagLong = "--help";
+constexpr const char* kHelpFlagShort = "-h";
+
+bool hasFlag(int argc, char* argv[], const char* flag) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == flag) return true;
+    }
+    return false;
 }
 
-int main(int, char**) {
+void printHelp() {
+    std::cout <<
+        "CtTaskManager -- cross-platform system monitor (Dear ImGui edition)\n"
+        "\n"
+        "Usage: CtTaskManager [options]\n"
+        "\n"
+        "Options:\n"
+        "  -h, --help          Show this help message and exit.\n"
+        "\n"
+        "  --track-bandwidth   Enable the Bandwidth tab (per-process download/\n"
+        "                      upload, TCP + UDP).\n"
+        "\n"
+        "                      Windows: requires Administrator rights and\n"
+        "                      triggers a UAC prompt on launch; cancelling the\n"
+        "                      prompt falls back to a normal launch without the\n"
+        "                      tab, rather than refusing to start.\n"
+        "\n"
+        "                      Linux: TCP works without elevation. UDP\n"
+        "                      additionally needs root or the CAP_NET_RAW\n"
+        "                      capability on the binary, e.g.:\n"
+        "                        sudo setcap cap_net_raw+ep <path-to-binary>\n"
+        "                      Without it, the Bandwidth tab still opens with\n"
+        "                      TCP data and a status note explaining why UDP\n"
+        "                      is unavailable.\n"
+        "\n"
+        "Without any options, CtTaskManager starts normally with the\n"
+        "Processes, Performance, Network, and Connections tabs. No admin/\n"
+        "elevated rights are required for normal operation on either platform.\n"
+        << std::flush;
+}
+
+#ifdef _WIN32
+bool isProcessElevated() {
+    bool elevated = false;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
+            elevated = elevation.TokenIsElevated != 0;
+        }
+        CloseHandle(token);
+    }
+    return elevated;
+}
+
+bool relaunchElevated(int argc, char* argv[]) {
+    wchar_t exePath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
+
+    std::string args;
+    for (int i = 1; i < argc; ++i) {
+        args += argv[i];
+        if (i + 1 < argc) args += ' ';
+    }
+    std::wstring argsW(args.begin(), args.end());
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exePath;
+    sei.lpParameters = argsW.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&sei)) return false; // most commonly: user clicked "No" on the UAC prompt
+    if (sei.hProcess) CloseHandle(sei.hProcess);
+    return true;
+}
+#endif
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+    if (hasFlag(argc, argv, kHelpFlagLong) || hasFlag(argc, argv, kHelpFlagShort)) {
+        printHelp();
+        return 0;
+    }
+
+    bool trackBandwidth = hasFlag(argc, argv, kTrackBandwidthFlag);
+
+#ifdef _WIN32
+    if (trackBandwidth && !isProcessElevated()) {
+        if (relaunchElevated(argc, argv)) {
+            return 0; // the elevated instance takes over; this one exits quietly
+        }
+        trackBandwidth = false; // elevation cancelled/failed -- run normally, without the flag
+    }
+#endif
+
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {
         std::fprintf(stderr, "Failed to initialize GLFW\n");
@@ -39,7 +147,7 @@ int main(int, char**) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(1280, 800, "TaskManager", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1280, 800, "CtTaskManager", nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "Failed to create GLFW window\n");
         glfwTerminate();
@@ -58,9 +166,9 @@ int main(int, char**) {
     // ImGui's built-in default font (ProggyClean) is a small pixel-art
     // style font designed to look crisp only at its native ~13px size --
     // it was never meant to be rasterized larger with antialiasing, which
-    // is why it looked noticeably blurrier/blockier than the Qt edition's
-    // native Segoe UI rendering. Load a real system TrueType font instead,
-    // with proper oversampling for smooth antialiased glyphs at any size.
+    // reads noticeably blurrier/blockier at larger sizes. Load a real
+    // system TrueType font instead, with proper oversampling for smooth
+    // antialiased glyphs at any size.
     // Falls back to the improved-but-still-limited default font only if
     // no system font could be found at any of the well-known paths.
     ImFontConfig fontConfig;
@@ -70,7 +178,7 @@ int main(int, char**) {
 
     const char* candidateFonts[] = {
 #ifdef _WIN32
-        "C:\\Windows\\Fonts\\segoeui.ttf",   // same font the Qt edition used
+        "C:\\Windows\\Fonts\\segoeui.ttf",   // Windows' default UI font
         "C:\\Windows\\Fonts\\arial.ttf",
 #else
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -99,7 +207,7 @@ int main(int, char**) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glslVersion);
 
-    App app;
+    App app(trackBandwidth);
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();

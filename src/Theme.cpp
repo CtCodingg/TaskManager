@@ -13,7 +13,7 @@ void apply() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
-    // Palette matches the Qt edition's resources/style.qss / UiTheme.h.
+    // Dark palette.
     const ImVec4 bgBase      = hex(0x0d, 0x11, 0x17);
     const ImVec4 bgSurface   = hex(0x13, 0x18, 0x22);
     const ImVec4 bgElevated  = hex(0x1a, 0x20, 0x29);
@@ -53,9 +53,8 @@ void apply() {
     colors[ImGuiCol_TabActive]        = bgElevated;
     colors[ImGuiCol_TabUnfocused]     = bgBase;
     colors[ImGuiCol_TabUnfocusedActive] = bgElevated;
-    // Accent-colored line on the selected tab -- the ImGui equivalent of
-    // the Qt edition's "border-bottom: 2px solid accent" under the active
-    // tab (QSS QTabBar::tab:selected). Requires Dear ImGui >= 1.91.
+    // Accent-colored line on the selected tab, marking it clearly.
+    // Requires Dear ImGui >= 1.91.
     colors[ImGuiCol_TabSelectedOverline] = accent;
     colors[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(accent.x, accent.y, accent.z, 0.5f);
     colors[ImGuiCol_Text]             = textPrimary;
@@ -80,9 +79,8 @@ void apply() {
     style.ItemSpacing = ImVec2(8, 8);
     style.IndentSpacing = 16.0f;
     // Table row height/comfort: ImGui's default (~4,2) reads much tighter
-    // than the Qt edition's table rows (QSS: "padding: 5px 8px"). This is
-    // the main lever for "process rows are too small" -- taller cell
-    // padding, not font size alone, is what made the Qt table feel roomy.
+    // than a comfortable table row. This is the main lever for readable
+    // table rows -- taller cell padding, not font size alone.
     style.CellPadding = ImVec2(10, 8);
 }
 

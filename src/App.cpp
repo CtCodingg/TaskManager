@@ -2,21 +2,57 @@
 #include "imgui.h"
 #include <GLFW/glfw3.h>
 
-namespace {
-void drawStubTab(const char* name, const char* note) {
-    ImGui::TextDisabled("%s", name);
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextWrapped(
-        "Not yet ported from the Qt edition. %s", note);
-    ImGui::TextWrapped(
-        "Pattern to follow: see ui/ProcessesTab.h/.cpp for a fully worked "
-        "example (collector -> poll timer -> ImGui::BeginTable with "
-        "sorting/filtering).");
-}
+App::App(bool enableBandwidthTracking) : m_bandwidthTrackingEnabled(enableBandwidthTracking) {
+    m_refreshRateSec = m_settingsWindow.refreshRateMs() / 1000.0;
+
+    if (m_bandwidthTrackingEnabled) {
+        m_bandwidthCollector = std::make_unique<ProcessBandwidthCollector>();
+        if (m_bandwidthCollector->start()) {
+            m_bandwidthTab.setAvailabilityNote(m_bandwidthCollector->lastError());
+        } else {
+            m_bandwidthTab.setAvailabilityNote("Bandwidth tracking could not start: " + m_bandwidthCollector->lastError());
+        }
+    }
 }
 
-App::App() {}
+std::string App::pidToName(int64_t pid) const {
+    return m_processesTab.nameForPid(pid);
+}
+
+void App::pollIfDue() {
+    double now = glfwGetTime();
+
+    if (now - m_lastProcessPoll >= m_refreshRateSec) {
+        m_processesTab.updateData(m_processCollector.collect());
+        m_lastProcessPoll = now;
+    }
+
+    if (now - m_lastStatsPoll >= m_refreshRateSec) {
+        CpuStats cpu = m_systemCollector.collectCpu();
+        MemoryStats mem = m_systemCollector.collectMemory();
+        auto disks = m_systemCollector.collectDiskVolumes();
+        auto diskIo = m_systemCollector.collectDiskIo();
+        auto gpus = m_gpuCollector.collect();
+        m_performanceTab.updateData(cpu, mem, disks, diskIo, gpus);
+
+        m_networkTab.updateData(m_networkCollector.collect());
+        m_lastStatsPoll = now;
+    }
+
+    // Slower interval: on Linux this scans every process's /proc/<pid>/fd
+    // table, more expensive than the other collectors.
+    if (now - m_lastConnectionsPoll >= m_refreshRateSec * 3.0) {
+        m_connectionsTab.updateData(m_connectionCollector.collect());
+        m_lastConnectionsPoll = now;
+    }
+
+    if (m_bandwidthTrackingEnabled && m_bandwidthCollector && m_bandwidthCollector->isRunning()) {
+        if (now - m_lastBandwidthPoll >= m_refreshRateSec * 2.0) {
+            m_bandwidthTab.updateData(m_bandwidthCollector->collect());
+            m_lastBandwidthPoll = now;
+        }
+    }
+}
 
 void App::draw() {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -34,21 +70,21 @@ void App::draw() {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::Begin("TaskManagerRoot", nullptr, flags);
+    ImGui::Begin("CtTaskManagerRoot", nullptr, flags);
     ImGui::PopStyleVar(2);
 
     if (ImGui::BeginMenuBar()) {
-        if (ImGui::MenuItem("Settings")) { /* TODO: settings modal */ }
-        if (ImGui::MenuItem("About")) { /* TODO: about modal */ }
+        if (ImGui::MenuItem("Settings")) m_settingsWindow.open();
+        if (ImGui::MenuItem("About")) m_aboutWindow.open();
         ImGui::EndMenuBar();
     }
 
-    // --- Poll on a timer, same cadence as the Qt edition's QTimer -------
-    double now = glfwGetTime();
-    if (now - m_lastProcessPollTime >= m_processPollIntervalSec) {
-        m_processesTab.updateData(m_processCollector.collect());
-        m_lastProcessPollTime = now;
+    if (m_settingsWindow.draw()) {
+        m_refreshRateSec = m_settingsWindow.refreshRateMs() / 1000.0;
     }
+    m_aboutWindow.draw();
+
+    pollIfDue();
 
     if (ImGui::BeginTabBar("MainTabs")) {
         if (ImGui::BeginTabItem("Processes")) {
@@ -56,20 +92,22 @@ void App::draw() {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Performance")) {
-            drawStubTab("Performance", "Ports SystemStatsCollector + GpuStatsCollector; charts via ImPlot::PlotLine in a rolling buffer (see HistoryChartWidget.cpp in the Qt edition for the exact data-shape to replicate).");
+            m_performanceTab.draw();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Network")) {
-            drawStubTab("Network", "Ports NetworkStatsCollector; same ImGui::BeginTable pattern as Processes.");
+            m_networkTab.draw();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Connections")) {
-            drawStubTab("Connections", "Ports ProcessConnectionCollector; same table pattern.");
+            m_connectionsTab.draw([this](int64_t pid) { return pidToName(pid); });
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Bandwidth")) {
-            drawStubTab("Bandwidth", "Ports ProcessBandwidthCollector (Netlink/ETW backends carry over almost unchanged -- they never used Qt types internally beyond QString/QMap, which are already swapped in Types.h's pattern).");
-            ImGui::EndTabItem();
+        if (m_bandwidthTrackingEnabled) {
+            if (ImGui::BeginTabItem("Bandwidth")) {
+                m_bandwidthTab.draw([this](int64_t pid) { return pidToName(pid); });
+                ImGui::EndTabItem();
+            }
         }
         ImGui::EndTabBar();
     }

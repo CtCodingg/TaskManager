@@ -1,4 +1,4 @@
-// Qt-free port of the Qt edition's ProcessBackendWin.cpp.
+// Process enumeration and control via Toolhelp32 + PSAPI.
 
 #include "ProcessCollector.h"
 
