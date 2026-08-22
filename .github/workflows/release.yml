@@ -1,53 +1,115 @@
-name: Build and Release
+name: Release Build
 
+# Runs for every pushed tag (e.g. "v1.0.0"). Also runnable manually from the
+# Actions tab (workflow_dispatch) for testing without needing to push a tag.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+
+# Needed so the workflow can create/attach files to a GitHub Release.
+permissions:
+  contents: write
+
+env:
+  BUILD_TYPE: Release
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, windows-latest]
-
+  # ---------------------------------------------------------------------
+  # Windows x64 (MSVC, statically-linked CRT -- see CMakeLists.txt, no
+  # extra runtime DLLs to bundle).
+  # ---------------------------------------------------------------------
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-2022
     steps:
-      - name: Code auschecken
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # HIER DEINEN BUILD-SCHRITT EINFÜGEN
-      - name: Beispiel-Build
+      # Speeds up repeat runs: GLFW/Dear ImGui/ImPlot are re-downloaded via
+      # FetchContent every configure unless cached here.
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Install
+        run: cmake --install build --config ${{ env.BUILD_TYPE }} --prefix install
+
+      # 7z ships preinstalled on the windows-2022 runner image.
+      - name: Package
+        shell: bash
         run: |
-          echo "Baut das Projekt für ${{ matrix.os }}"
-          # Erstelle eine Dummy-Datei als Release-Paket
-          mkdir -p dist
-          echo "App-Inhalt" > dist/app-${{ matrix.os }}.txt
+          cd install
+          7z a "../CtTaskManager-${{ github.ref_name }}-windows-x64.zip" .
 
-      - name: Artefakte hochladen
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: package-${{ matrix.os }}
-          path: dist/
+          name: CtTaskManager-windows-x64
+          path: CtTaskManager-${{ github.ref_name }}-windows-x64.zip
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CtTaskManager-${{ github.ref_name }}-windows-x64.zip
+
+  # ---------------------------------------------------------------------
+  # Ubuntu 22.04 x64 (GCC, statically-linked libstdc++/libgcc -- see
+  # CMakeLists.txt; glibc/OpenGL/X11 remain dynamic system libraries, as
+  # on every Linux desktop).
+  # ---------------------------------------------------------------------
+  ubuntu22-x64:
+    name: Ubuntu 22.04 x64
+    runs-on: ubuntu-22.04
     steps:
-      - name: Artefakte herunterladen
-        uses: actions/download-artifact@v4
-        with:
-          path: downloaded-artifacts
+      - uses: actions/checkout@v4
 
-      - name: Ordnerstruktur anpassen
-        run: ls -R downloaded-artifacts
+      # xorg-dev pulls the X11 headers GLFW's Linux backend needs
+      # (Xrandr, Xinerama, Xcursor, Xi, ...); libgl1-mesa-dev is the
+      # OpenGL headers/loader dev package.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libgl1-mesa-dev xorg-dev
 
-      - name: GitHub Release erstellen
-        uses: softprops/action-gh-release@v1
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
         with:
-          files: downloaded-artifacts/**/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: build/_deps
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install
+        run: cmake --install build --prefix install
+
+      - name: Package
+        run: |
+          cd install
+          tar -czf "../CtTaskManager-${{ github.ref_name }}-ubuntu22-x64.tar.gz" .
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CtTaskManager-ubuntu22-x64
+          path: CtTaskManager-${{ github.ref_name }}-ubuntu22-x64.tar.gz
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CtTaskManager-${{ github.ref_name }}-ubuntu22-x64.tar.gz
