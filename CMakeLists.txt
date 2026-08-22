@@ -203,4 +203,7 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS CtTaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+install(FILES "${CMAKE_SOURCE_DIR}/LICENCE"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/licences")
+
 message(STATUS "CtTaskManager: GLFW+Dear ImGui+ImPlot fetched via FetchContent")

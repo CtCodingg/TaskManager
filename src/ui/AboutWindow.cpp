@@ -41,10 +41,10 @@ void AboutWindow::draw() {
 
         ImGui::Spacing();
         ImGui::TextDisabled("License");
-        // All third-party dependencies (GLFW, Dear ImGui, ImPlot) are
-        // MIT/zlib licensed -- no GPL/LGPL obligations.
-        ImGui::Text("MIT/zlib-licensed dependencies only.");
-        ImGui::TextWrapped("Project license: see LICENCE in the repository root.");
+        ImGui::Text("MIT License");
+        ImGui::TextWrapped("All third-party dependencies (GLFW, Dear ImGui, ImPlot) are "
+                            "MIT/zlib licensed too -- no GPL/LGPL obligations. Full text in "
+                            "LICENCE at the repository root.");
 
         ImGui::Spacing();
         ImGui::TextDisabled("Author");

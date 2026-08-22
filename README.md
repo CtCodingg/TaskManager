@@ -1,5 +1,7 @@
 # CtTaskManager
 
+MIT licensed -- see [LICENCE](LICENCE).
+
 A cross-platform system/task monitor built with **GLFW + Dear ImGui +
 ImPlot + OpenGL 3**, fetched via CMake `FetchContent` at configure time.
 All MIT/zlib licensed -- no GPL/LGPL dependencies. Targets Ubuntu 22/24
