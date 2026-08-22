@@ -42,6 +42,7 @@ private slots:
     void onKillSelectedProcess();
     void onProcessContextMenu(const QPoint& pos);
     void onConnectionsFilterChanged(const QString& text);
+    void onOpenSettings();
 
 private:
     // --- Data collectors (platform-agnostic front, platform impl behind) ---
@@ -54,6 +55,11 @@ private:
     QTimer m_processTimer;
     QTimer m_statsTimer;
     QTimer m_connectionsTimer;
+
+    // Single user-configurable poll interval (Settings dialog), applied to
+    // every timer above plus m_bandwidthTimer. Loaded from QSettings at
+    // startup, defaults to 1000ms.
+    int m_refreshRateMs = 1000;
 
     // --- Processes tab ---
     ProcessModel* m_processModel = nullptr;
@@ -127,6 +133,11 @@ private:
     void updateNetworkUi(const NetworkStats& net);
     void renderConnectionsTable(const QString& filterText);
     void updateBandwidthUi(const QMap<qint64, ProcessBandwidthStats>& stats);
+
+    // Reads QSettings and applies the effects: FormatUtils::setRateUnit()
+    // and every QTimer's interval. Called once at startup and again after
+    // the Settings dialog closes with changes accepted.
+    void loadAndApplySettings();
 
     // Sets the QProgressBar's "level" dynamic property (good/warn/critical)
     // from a 0-100 percentage and re-polishes it so the QSS

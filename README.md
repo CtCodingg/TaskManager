@@ -51,6 +51,13 @@ builds and runs fine on machines without an NVIDIA driver.
   - Both TCP and UDP **require Administrator on Windows**, so this flag
     triggers a UAC prompt; default launches never do.
 
+- **Settings** (⚙ menu, top-left): data rate display unit (Bits — the
+  default, `kbit/s`/`Mbit/s`/`Gbit/s` — or Bytes, `KB/s`/`MB/s`/`GB/s`) and
+  the UI refresh rate in milliseconds. Applies to network throughput, disk
+  I/O, and per-process bandwidth; cumulative totals (memory, disk space,
+  session totals) always stay in bytes. Persisted across restarts via
+  `QSettings` (an INI file on Linux, the registry on Windows).
+
 ## Command-line flags
 
 | Flag | Effect |

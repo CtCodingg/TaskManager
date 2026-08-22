@@ -3,6 +3,7 @@
 #include "HistoryChartWidget.h"
 #include "FormatUtils.h"
 #include "UiTheme.h"
+#include "SettingsDialog.h"
 
 #include <QTableView>
 #include <QHeaderView>
@@ -16,6 +17,7 @@
 #include <QTableWidget>
 #include <QSortFilterProxyModel>
 #include <QMenu>
+#include <QMenuBar>
 #include <QAction>
 #include <QMessageBox>
 #include <QGroupBox>
@@ -28,14 +30,10 @@
 #include <QBrush>
 #include <QColor>
 #include <QSet>
+#include <QSettings>
 
 namespace {
-constexpr int kProcessPollMs = 1500;
-constexpr int kStatsPollMs = 1000;
-// Slower interval: on Linux this scans every process's /proc/<pid>/fd
-// table each poll, which is more expensive than the other collectors.
-constexpr int kConnectionsPollMs = 3000;
-constexpr int kBandwidthPollMs = 2000;
+constexpr int kDefaultRefreshMs = 1000;
 }
 
 MainWindow::MainWindow(bool enableBandwidthTracking, QWidget* parent)
@@ -44,12 +42,14 @@ MainWindow::MainWindow(bool enableBandwidthTracking, QWidget* parent)
     resize(1200, 800);
     buildUi();
 
+    loadAndApplySettings(); // sets m_refreshRateMs and FormatUtils rate unit before timers start
+
     connect(&m_processTimer, &QTimer::timeout, this, &MainWindow::pollProcesses);
     connect(&m_statsTimer, &QTimer::timeout, this, &MainWindow::pollSystemStats);
     connect(&m_connectionsTimer, &QTimer::timeout, this, &MainWindow::pollConnections);
-    m_processTimer.start(kProcessPollMs);
-    m_statsTimer.start(kStatsPollMs);
-    m_connectionsTimer.start(kConnectionsPollMs);
+    m_processTimer.start(m_refreshRateMs);
+    m_statsTimer.start(m_refreshRateMs);
+    m_connectionsTimer.start(m_refreshRateMs);
 
     // Immediate first poll so the UI isn't empty on launch
     pollProcesses();
@@ -64,7 +64,7 @@ MainWindow::MainWindow(bool enableBandwidthTracking, QWidget* parent)
             // be available. lastError() carries that note even on success.
             m_bandwidthAvailabilityNote = m_bandwidthCollector->lastError();
             connect(&m_bandwidthTimer, &QTimer::timeout, this, &MainWindow::pollBandwidth);
-            m_bandwidthTimer.start(kBandwidthPollMs);
+            m_bandwidthTimer.start(m_refreshRateMs);
             pollBandwidth();
         } else if (m_bandwidthStatusLabel) {
             m_bandwidthStatusLabel->setText(
@@ -79,10 +79,46 @@ MainWindow::~MainWindow() {
     delete m_bandwidthCollector;
 }
 
+void MainWindow::loadAndApplySettings() {
+    QSettings settings;
+    bool useBits = settings.value("network/rateUnitIsBits", true).toBool();
+    FormatUtils::setRateUnit(useBits ? FormatUtils::RateUnit::Bits : FormatUtils::RateUnit::Bytes);
+
+    m_refreshRateMs = settings.value("general/refreshRateMs", kDefaultRefreshMs).toInt();
+
+    // Re-apply to already-running timers too (called again after the
+    // Settings dialog closes, not just at startup). setInterval() on a
+    // live QTimer takes effect for its next firing -- no restart needed.
+    m_processTimer.setInterval(m_refreshRateMs);
+    m_statsTimer.setInterval(m_refreshRateMs);
+    m_connectionsTimer.setInterval(m_refreshRateMs);
+    if (m_bandwidthTimer.isActive()) {
+        m_bandwidthTimer.setInterval(m_refreshRateMs);
+    }
+}
+
+void MainWindow::onOpenSettings() {
+    SettingsDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    loadAndApplySettings();
+
+    // Refresh every visible table/label immediately so the new rate unit
+    // is visible right away, rather than waiting for the next poll tick.
+    pollSystemStats();
+    if (m_connectionsTable) pollConnections();
+    if (m_bandwidthTable && m_bandwidthCollector && m_bandwidthCollector->isRunning()) {
+        pollBandwidth();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UI construction
 // ---------------------------------------------------------------------------
 void MainWindow::buildUi() {
+    QAction* settingsAction = menuBar()->addAction("⚙ Settings");
+    connect(settingsAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
+
     auto* tabs = new QTabWidget(this);
     tabs->addTab(buildProcessesTab(), "Processes");
     tabs->addTab(buildPerformanceTab(), "Performance");
@@ -257,8 +293,8 @@ QWidget* MainWindow::buildNetworkTab() {
 
     m_networkChart = new HistoryChartWidget("Total Bandwidth", 120);
     m_networkChart->setYAutoScale(true);
-    m_netRxSeriesIndex = m_networkChart->addSeries("Download (B/s)", UiTheme::accentNetRx());
-    m_netTxSeriesIndex = m_networkChart->addSeries("Upload (B/s)", UiTheme::accentNetTx());
+    m_netRxSeriesIndex = m_networkChart->addSeries("Download", UiTheme::accentNetRx());
+    m_netTxSeriesIndex = m_networkChart->addSeries("Upload", UiTheme::accentNetTx());
     layout->addWidget(m_networkChart);
 
     m_networkTable = new QTableWidget(0, 11);
@@ -476,8 +512,8 @@ void MainWindow::updateDiskUi(const QVector<DiskVolume>& volumes, const QVector<
     for (int i = 0; i < io.size(); ++i) {
         const DiskIoStats& d = io[i];
         m_diskIoTable->setItem(i, 0, new QTableWidgetItem(d.device));
-        m_diskIoTable->setItem(i, 1, new QTableWidgetItem(FormatUtils::bytesPerSec(d.readBytesPerSec)));
-        m_diskIoTable->setItem(i, 2, new QTableWidgetItem(FormatUtils::bytesPerSec(d.writeBytesPerSec)));
+        m_diskIoTable->setItem(i, 1, new QTableWidgetItem(FormatUtils::rate(d.readBytesPerSec)));
+        m_diskIoTable->setItem(i, 2, new QTableWidgetItem(FormatUtils::rate(d.writeBytesPerSec)));
         auto* utilItem = new QTableWidgetItem(FormatUtils::percent(d.utilizationPercent));
         utilItem->setForeground(QBrush(UiTheme::colorForPercent(d.utilizationPercent)));
         m_diskIoTable->setItem(i, 3, utilItem);
@@ -539,8 +575,8 @@ void MainWindow::updateGpuUi(const QVector<GpuInfo>& gpus) {
 
 void MainWindow::updateNetworkUi(const NetworkStats& net) {
     m_networkTotalsLabel->setText(QString("Total: ↓ %1   ↑ %2")
-        .arg(FormatUtils::bytesPerSec(net.totalRxBytesPerSec))
-        .arg(FormatUtils::bytesPerSec(net.totalTxBytesPerSec)));
+        .arg(FormatUtils::rate(net.totalRxBytesPerSec))
+        .arg(FormatUtils::rate(net.totalTxBytesPerSec)));
 
     m_networkChart->pushValue(m_netRxSeriesIndex, double(net.totalRxBytesPerSec));
     m_networkChart->pushValue(m_netTxSeriesIndex, double(net.totalTxBytesPerSec));
@@ -567,8 +603,8 @@ void MainWindow::updateNetworkUi(const NetworkStats& net) {
         m_networkTable->setItem(i, col++, new QTableWidgetItem(ifs.ipv4Address));
         m_networkTable->setItem(i, col++, new QTableWidgetItem(
             ifs.linkSpeedMbps ? QString("%1 Mbps").arg(ifs.linkSpeedMbps) : "n/a"));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::bytesPerSec(ifs.rxBytesPerSec)));
-        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::bytesPerSec(ifs.txBytesPerSec)));
+        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::rate(ifs.rxBytesPerSec)));
+        m_networkTable->setItem(i, col++, new QTableWidgetItem(FormatUtils::rate(ifs.txBytesPerSec)));
         m_networkTable->setItem(i, col++, new QTableWidgetItem(
             ifs.linkSpeedMbps ? FormatUtils::percent(ifs.utilizationPercent) : "n/a"));
 
@@ -689,10 +725,10 @@ void MainWindow::updateBandwidthUi(const QMap<qint64, ProcessBandwidthStats>& st
         pidItem->setData(Qt::DisplayRole, pid);
         m_bandwidthTable->setItem(row, col++, pidItem);
 
-        auto* downItem = new QTableWidgetItem(FormatUtils::bytesPerSec(s.rxBytesPerSec));
+        auto* downItem = new QTableWidgetItem(FormatUtils::rate(s.rxBytesPerSec));
         m_bandwidthTable->setItem(row, col++, downItem);
 
-        auto* upItem = new QTableWidgetItem(FormatUtils::bytesPerSec(s.txBytesPerSec));
+        auto* upItem = new QTableWidgetItem(FormatUtils::rate(s.txBytesPerSec));
         m_bandwidthTable->setItem(row, col++, upItem);
 
         QString totalText = QString("↓ %1  ↑ %2")

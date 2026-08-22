@@ -62,6 +62,7 @@ set(TM_SOURCES
     src/ProcessModel.cpp
     src/HistoryChartWidget.cpp
     src/FormatUtils.cpp
+    src/SettingsDialog.cpp
 )
 
 set(TM_HEADERS
@@ -76,6 +77,7 @@ set(TM_HEADERS
     include/HistoryChartWidget.h
     include/FormatUtils.h
     include/UiTheme.h
+    include/SettingsDialog.h
     include/Types.h
 )
 

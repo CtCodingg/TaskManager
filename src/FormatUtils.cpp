@@ -23,9 +23,25 @@ QString bytesPerSec(quint64 value) {
 }
 
 QString bitsPerSec(quint64 bytesPerSecValue) {
-    static const char* const units[] = {"bps", "Kbps", "Mbps", "Gbps"};
+    static const char* const units[] = {"bit/s", "kbit/s", "Mbit/s", "Gbit/s"};
     double bits = static_cast<double>(bytesPerSecValue) * 8.0;
     return scaledUnits(bits, units, 4, 1000.0);
+}
+
+namespace {
+RateUnit g_rateUnit = RateUnit::Bits; // default: bits, per the user-facing default
+}
+
+void setRateUnit(RateUnit unit) {
+    g_rateUnit = unit;
+}
+
+RateUnit rateUnit() {
+    return g_rateUnit;
+}
+
+QString rate(quint64 bytesPerSecValue) {
+    return (g_rateUnit == RateUnit::Bits) ? bitsPerSec(bytesPerSecValue) : bytesPerSec(bytesPerSecValue);
 }
 
 QString percent(double value, int decimals) {
