@@ -1,222 +1,157 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(TaskManager
+# Must be set before project(): selects the /MT (static) vs /MD (dynamic)
+# MSVC C runtime. NEW behavior makes CMAKE_MSVC_RUNTIME_LIBRARY (set just
+# below) actually take effect; cmake_minimum_required(3.16) already
+# implies this policy defaults to NEW, but setting it explicitly avoids
+# any ambiguity.
+cmake_policy(SET CMP0091 NEW)
+
+project(CtTaskManager
     VERSION 0.1.0
-    DESCRIPTION "Cross-platform Task Manager (Ubuntu 22/24, ARMv8/Jetson, Windows)"
+    DESCRIPTION "Cross-platform Task Manager -- Dear ImGui edition (no Qt)"
     LANGUAGES CXX
 )
 
-# ---------------------------------------------------------------------------
-# Global settings
-# ---------------------------------------------------------------------------
+# Statically link the MSVC C/C++ runtime (/MT, /MTd for Debug) instead of
+# the default /MD, /MDd. Result: the .exe needs no vcruntime140.dll /
+# msvcp140.dll / ucrtbase.dll on the target machine -- it's fully
+# self-contained, matching this project's "no external dependencies"
+# goal now that Qt (and windeployqt) are gone. Must be set BEFORE the
+# FetchContent_MakeAvailable() calls below, so glfw/imgui/implot are all
+# built with the same runtime setting -- a mismatch between static libs
+# built with /MT vs /MD causes LNK2038 "mismatch detected" errors.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
-
-# Keep moc_*.cpp / qrc_*.cpp / ui_*.h etc. out of the way in IDEs that show
-# a source tree (Visual Studio's Solution Explorer, in particular): group
-# every AUTOMOC/AUTOUIC/AUTORCC-generated file under a single virtual
-# "Generated Files" filter instead of interleaving them with real source
-# files. This only affects IDE presentation -- the files still physically
-# live under build/TaskManager_autogen/, never next to the real sources on
-# disk. Setting all four (general + the three tool-specific ones) covers
-# CMake-version differences in which variable actually takes effect.
-set(CMAKE_AUTOGEN_SOURCE_GROUP "Generated Files")
-set(CMAKE_AUTOMOC_SOURCE_GROUP "Generated Files")
-set(CMAKE_AUTOUIC_SOURCE_GROUP "Generated Files")
-set(CMAKE_AUTORCC_SOURCE_GROUP "Generated Files")
-
-# Tidy up Visual Studio's Solution Explorer at the PROJECT level too: CMake
-# creates separate helper projects for ALL_BUILD/ZERO_CHECK/INSTALL, and
-# for each AUTOMOC/AUTOUIC/AUTORCC-enabled target, a "<target>_autogen" /
-# "<target>_autogen_timestamp_<Config>" utility project. These aren't
-# files a source_group can hide -- they're their own projects -- so they
-# need Solution Folders instead. TaskManager's own AUTOGEN_TARGETS_FOLDER
-# is set on the target itself further below, after add_executable().
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set(CMAKE_PREDEFINED_TARGETS_FOLDER "CMakePredefinedTargets")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
 
-# compile_commands.json for clangd / VS Code IntelliSense
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-message(STATUS "TaskManager: building for ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
-
-# ---------------------------------------------------------------------------
-# Platform / arch detection
-# ---------------------------------------------------------------------------
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64|armv8)")
-    set(TM_ARCH_ARM64 TRUE)
-else()
-    set(TM_ARCH_ARM64 FALSE)
-endif()
-
-# Jetson boards expose this file; enables Tegra GPU stats via sysfs (no CUDA/NVML needed)
 if(EXISTS "/etc/nv_tegra_release")
     set(TM_IS_JETSON TRUE)
 else()
     set(TM_IS_JETSON FALSE)
 endif()
 
-message(STATUS "TaskManager: ARM64=${TM_ARCH_ARM64} Jetson=${TM_IS_JETSON}")
+# ---------------------------------------------------------------------------
+# Third-party sources, fetched at configure time (no system install needed).
+# All MIT/zlib-licensed -- no GPL/LGPL entanglement like Qt Charts had.
+# ---------------------------------------------------------------------------
+include(FetchContent)
+
+FetchContent_Declare(glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG        3.4
+)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfw)
+
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.91.5
+)
+FetchContent_MakeAvailable(imgui)
+
+FetchContent_Declare(implot
+    GIT_REPOSITORY https://github.com/epezent/implot.git
+    GIT_TAG        v0.16
+)
+FetchContent_MakeAvailable(implot)
+
+# Dear ImGui doesn't ship its own CMakeLists.txt for the core lib + GLFW/GL3
+# backends, so build them as a small static lib ourselves.
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC glfw)
+
+add_library(implot STATIC
+    ${implot_SOURCE_DIR}/implot.cpp
+    ${implot_SOURCE_DIR}/implot_items.cpp
+)
+target_include_directories(implot PUBLIC ${implot_SOURCE_DIR})
+target_link_libraries(implot PUBLIC imgui)
 
 # ---------------------------------------------------------------------------
-# Qt (support Qt5 or Qt6, whichever is found -- covers Ubuntu 22 (Qt5/Qt6)
-# and Ubuntu 24 (Qt6) and Windows)
-# ---------------------------------------------------------------------------
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Charts Network)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Charts Network)
-
-message(STATUS "TaskManager: using Qt${QT_VERSION_MAJOR}")
-
-# ---------------------------------------------------------------------------
-# Sources
+# TaskManager sources
 # ---------------------------------------------------------------------------
 set(TM_SOURCES
     src/main.cpp
-    src/MainWindow.cpp
-    src/ProcessModel.cpp
-    src/HistoryChartWidget.cpp
-    src/FormatUtils.cpp
-    src/SettingsDialog.cpp
-    src/AboutDialog.cpp
-)
-
-set(TM_HEADERS
-    include/MainWindow.h
-    include/ProcessModel.h
-    include/ProcessCollector.h
-    include/SystemStatsCollector.h
-    include/NetworkStatsCollector.h
-    include/GpuStatsCollector.h
-    include/ProcessConnectionCollector.h
-    include/ProcessBandwidthCollector.h
-    include/HistoryChartWidget.h
-    include/FormatUtils.h
-    include/UiTheme.h
-    include/SettingsDialog.h
-    include/AboutDialog.h
-    include/Types.h
+    src/App.cpp
+    src/Theme.cpp
+    src/ui/ProcessesTab.cpp
+    src/backend/FormatUtils.cpp
 )
 
 if(WIN32)
-    list(APPEND TM_SOURCES
-        src/platform/win/ProcessBackendWin.cpp
-        src/platform/win/SystemBackendWin.cpp
-        src/platform/win/NetworkBackendWin.cpp
-        src/platform/win/GpuBackendWin.cpp
-        src/platform/win/ProcessConnectionBackendWin.cpp
-        src/platform/win/ProcessBandwidthBackendWin.cpp
-    )
+    list(APPEND TM_SOURCES src/backend/platform/win/ProcessBackendWin.cpp)
 elseif(UNIX)
-    list(APPEND TM_SOURCES
-        src/platform/linux/ProcessBackendLinux.cpp
-        src/platform/linux/SystemBackendLinux.cpp
-        src/platform/linux/NetworkBackendLinux.cpp
-        src/platform/linux/GpuBackendLinux.cpp
-        src/platform/linux/ProcessConnectionBackendLinux.cpp
-        src/platform/linux/ProcessBandwidthBackendLinux.cpp
-    )
+    list(APPEND TM_SOURCES src/backend/platform/linux/ProcessBackendLinux.cpp)
 endif()
 
-add_executable(TaskManager ${TM_SOURCES} ${TM_HEADERS} resources/resources.qrc)
+add_executable(CtTaskManager ${TM_SOURCES})
 
-# Collapses the "TaskManager_autogen" and "TaskManager_autogen_timestamp_
-# <Config>" helper projects (created because AUTOMOC/AUTOUIC/AUTORCC are
-# enabled above) into a "CMakeAutogenTargets" solution folder in Visual
-# Studio's Solution Explorer, instead of leaving them as top-level
-# projects next to TaskManager itself.
-set_target_properties(TaskManager PROPERTIES AUTOGEN_TARGETS_FOLDER "CMakeAutogenTargets")
-
-target_include_directories(TaskManager PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
+target_include_directories(CtTaskManager PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/backend
 )
 
-target_link_libraries(TaskManager PRIVATE
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::Charts
-    Qt${QT_VERSION_MAJOR}::Network
-)
+target_link_libraries(CtTaskManager PRIVATE imgui implot)
 
-target_compile_definitions(TaskManager PRIVATE
+target_compile_definitions(CtTaskManager PRIVATE
     $<$<BOOL:${TM_IS_JETSON}>:TM_IS_JETSON>
-    $<$<BOOL:${TM_ARCH_ARM64}>:TM_ARCH_ARM64>
-    TM_VERSION_STRING="${PROJECT_VERSION}"
 )
 
-# ---------------------------------------------------------------------------
-# Windows: PDH (perf counters), IP Helper (network), PSAPI, SetupAPI (GPU enum),
-# Shell32 (ShellExecuteExW, the --track-bandwidth elevation prompt),
-# Tdh (Trace Data Helper, decodes ETW events for UDP bandwidth tracking)
-# ---------------------------------------------------------------------------
 if(WIN32)
-    target_link_libraries(TaskManager PRIVATE pdh iphlpapi ws2_32 psapi setupapi shell32 tdh)
-    target_compile_definitions(TaskManager PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
+    target_link_libraries(CtTaskManager PRIVATE opengl32 psapi)
+    target_compile_definitions(CtTaskManager PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+elseif(UNIX AND NOT APPLE)
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(CtTaskManager PRIVATE OpenGL::GL dl pthread)
 
-# ---------------------------------------------------------------------------
-# Linux/Jetson: dl + pthread. NVML (for discrete NVIDIA GPUs) is dlopen()'d
-# at RUNTIME ONLY if present on the system -- no hard link-time dependency,
-# so the "no other dependencies" requirement holds on machines without it
-# (e.g. plain Jetson, which uses the sysfs/tegra backend instead).
-# ---------------------------------------------------------------------------
-if(UNIX AND NOT APPLE)
-    target_link_libraries(TaskManager PRIVATE dl pthread)
+    # Statically link libstdc++/libgcc (the Linux equivalent of the MSVC
+    # static-CRT setting above): makes the binary portable across systems
+    # with a different/older GCC runtime than the one it was built with,
+    # without needing a matching libstdc++.so installed on the target.
+    #
+    # Deliberately NOT fully static (glibc itself, via -static): glibc's
+    # NSS (Name Service Switch) -- used by getpwuid() in
+    # ProcessBackendLinux.cpp for the process table's "User" column --
+    # loads its backends as shared plugins at runtime and is well-known to
+    # break silently when statically linked. Static libstdc++/libgcc has
+    # no such caveat and is the standard, safe choice here.
+    target_link_options(CtTaskManager PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
+# Unlike the Qt edition, there's no windeployqt step needed here: GLFW is
+# fetched and linked as a STATIC library by default (FetchContent above
+# doesn't set BUILD_SHARED_LIBS), so there are no runtime DLLs to deploy
+# alongside the executable -- OpenGL itself is a system driver library on
+# every target platform (opengl32.dll on Windows, libGL on Linux/Jetson).
 include(GNUInstallDirs)
-install(TARGETS TaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS CtTaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# Ship the repo-root LICENCE file next to the installed binary, under a
-# "licences" subfolder (bin/licences/LICENCE after install).
-install(FILES "${CMAKE_SOURCE_DIR}/LICENCE"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}/licences")
-
-# ---------------------------------------------------------------------------
-# Windows: run windeployqt against the INSTALLED executable (not the raw
-# build tree), so that `cmake --install build --prefix <dir>` produces a
-# fully self-contained, deployable folder under CMAKE_INSTALL_PREFIX with
-# the .exe and all required Qt DLLs/plugins side by side.
-#
-# install(CODE ...) is evaluated at `cmake --install` time (i.e. when you
-# run "cmake --install build" or build the INSTALL target in Visual
-# Studio), always AFTER install(TARGETS ...) above has already copied the
-# .exe into place, so windeployqt has something to deploy against.
-# ---------------------------------------------------------------------------
-if(WIN32)
-    get_target_property(_qmake_exe Qt${QT_VERSION_MAJOR}::qmake IMPORTED_LOCATION)
-    if(_qmake_exe)
-        get_filename_component(_qt_bin_dir "${_qmake_exe}" DIRECTORY)
-        find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")
-    endif()
-
-    if(WINDEPLOYQT_EXECUTABLE)
-        install(CODE "
-            message(STATUS \"Running windeployqt on installed executable...\")
-            execute_process(
-                COMMAND \"${WINDEPLOYQT_EXECUTABLE}\"
-                        --no-compiler-runtime
-                        \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/TaskManager.exe\"
-                RESULT_VARIABLE _windeployqt_result
-            )
-            if(NOT _windeployqt_result EQUAL 0)
-                message(WARNING \"windeployqt exited with code \${_windeployqt_result}\")
-            endif()
-        ")
-    else()
-        message(WARNING "windeployqt not found -- 'cmake --install' will NOT bundle Qt DLLs. "
-                         "Make sure Qt's bin/ directory is next to qmake, or run windeployqt manually "
-                         "against the installed .exe afterward.")
-    endif()
-endif()
+message(STATUS "CtTaskManager: Qt-free build, GLFW+Dear ImGui+ImPlot fetched via FetchContent")

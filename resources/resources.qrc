@@ -1,8 +1,0 @@
-<!DOCTYPE RCC><RCC version="1.0">
-<qresource prefix="/">
-    <file>style.qss</file>
-    <!-- Add icons/images here, e.g.:
-    <file>icons/app.png</file>
-    -->
-</qresource>
-</RCC>

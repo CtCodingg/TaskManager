@@ -1,188 +1,93 @@
-# TaskManager
+# TaskManager -- Dear ImGui edition (no Qt)
 
-A cross-platform system/task monitor written in C++17, CMake, and Qt Widgets
-(+ Qt Charts). Targets:
+A from-scratch port of the Qt-based TaskManager to a fully Qt-free stack:
+**GLFW + Dear ImGui + ImPlot + OpenGL 3**, fetched via CMake `FetchContent`
+at configure time (no system Qt install, no `windeployqt`, no GPL/LGPL
+entanglement from Qt Charts -- everything here is MIT/zlib licensed).
 
-- Ubuntu 22.04 and 24.04, x86_64
-- Ubuntu 22.04 and 24.04, ARMv8 (aarch64) — including NVIDIA Jetson (JetPack/L4T)
-- Windows 10/11, x64
+## Status: foundation + one fully-worked tab
 
-No third-party dependencies beyond Qt and each OS's own system libraries
-(PDH/IP Helper/PSAPI on Windows; glibc + /proc on Linux). NVML (for NVIDIA
-GPU stats on desktop Linux) is loaded at runtime with `dlopen` if present —
-it is never a hard link-time or build-time dependency, so the app still
-builds and runs fine on machines without an NVIDIA driver.
+This is **not** a complete port. Porting the entire Qt edition (5 tabs,
+sortable/filterable tables, live charts, dialogs, dark theme) is a multi-week
+project on its own, and I can't compile-test in this environment, so I've
+deliberately scoped this first pass to:
 
-## Features
+**Done and should build:**
+- `CMakeLists.txt` -- fetches GLFW, Dear ImGui, ImPlot; builds them as static
+  libs; links everything (no external installs needed beyond a C++17
+  compiler and OpenGL, which every desktop OS already has).
+- `main.cpp` -- GLFW window, OpenGL 3.3 core context, ImGui/ImPlot init,
+  render loop. Replaces `QApplication`/`MainWindow::show()`/`app.exec()`.
+- `Theme.cpp` -- dark palette ported 1:1 from the Qt edition's
+  `resources/style.qss` / `UiTheme.h` (same hex colors), applied via
+  `ImGuiStyle` instead of QSS.
+- `backend/Types.h`, `backend/FormatUtils.*` -- Qt-free (`std::string` /
+  `std::vector` / `std::map` instead of `QString`/`QVector`/`QMap`).
+- `backend/ProcessCollector` (Linux + Windows) -- full port of the Qt
+  edition's `/proc` and Toolhelp32 backends, same logic, Qt-free.
+- `ui/ProcessesTab.*` -- **the fully-worked reference tab**: sortable,
+  filterable process table via `ImGui::BeginTable` +
+  `ImGuiListClipper` (for scroll performance with large process counts),
+  color-coded CPU%/state cells, End Task button. This replaces
+  `ProcessModel` + `QSortFilterProxyModel` + `QTableView` entirely.
+- `App.cpp` -- top-level tab bar, polls `ProcessCollector` on a timer
+  (mirrors the Qt edition's `QTimer` cadence), draws stub placeholders for
+  the four not-yet-ported tabs.
 
-- **Processes & threads**: sortable/filterable process table (PID, name,
-  user, state, CPU%, RSS memory, thread count, priority, command line).
-  Expand-on-demand thread listing per process. Kill / set priority.
-- **CPU**: total load + per-core load, per-core frequency (Linux), CPU
-  temperature where exposed by the kernel/driver, rolling history chart.
-- **Memory**: used/available/cached, swap usage, rolling history chart.
-- **GPU**: vendor-aware — NVIDIA via NVML (dlopen), Jetson/Tegra integrated
-  GPU via sysfs (same source tegrastats uses), Intel/AMD best-effort via
-  `/sys/class/drm/.../gpu_busy_percent`, Windows via the built-in "GPU
-  Engine" / "GPU Adapter Memory" PDH counters (vendor-agnostic, no vendor
-  SDK needed).
-- **Disks**: per-volume usage (space) + per-device I/O throughput and
-  utilization.
-- **Network (deep info)**: per-interface RX/TX bandwidth, packet rate, link
-  speed, link utilization %, and — the detailed part — **drop % and error %
-  per interface**, computed each poll as
-  `dropped / (successful + dropped) * 100`, plus cumulative counters.
-- **Connections** (always on, no special privileges): every active TCP/UDP
-  connection (IPv4 + IPv6) with owning process, local/remote address:port,
-  and state (ESTABLISHED/LISTEN/TIME_WAIT/...). Linux: `/proc/net/*` +
-  `/proc/<pid>/fd` inode matching. Windows: `GetExtendedTcpTable` /
-  `GetExtendedUdpTable`.
-- **Bandwidth per process** (opt-in via `--track-bandwidth`, see below):
-  download/upload rate and session totals per process, TCP **and** UDP.
-  - Linux TCP: Netlink socket-diag with the `TCP_INFO` extension (same as
-    `ss -i`), no elevated privileges needed.
-  - Linux UDP: raw `AF_PACKET` capture matched to local ports —
-    **requires root or `CAP_NET_RAW`** (`sudo setcap cap_net_raw+ep
-    ./TaskManager` is the recommended way to grant just this capability
-    to the binary, rather than running the whole app as root).
-  - Windows TCP: the TCP Extended Statistics (EStats) API.
-  - Windows UDP: ETW consumption from the `Microsoft-Windows-Kernel-Network`
-    provider (the same mechanism Task Manager's own Network column uses).
-  - Both TCP and UDP **require Administrator on Windows**, so this flag
-    triggers a UAC prompt; default launches never do.
+**Not done -- stubbed with a note in the UI:**
+- Performance tab (CPU/Memory/GPU/Disk) -- needs `SystemStatsCollector` +
+  `GpuStatsCollector` ported (same mechanical Qt->std:: swap as
+  ProcessCollector), plus `ImPlot::PlotLine` in a rolling buffer to
+  replace `HistoryChartWidget`.
+- Network tab -- needs `NetworkStatsCollector` ported; UI is the same
+  `ImGui::BeginTable` pattern as Processes.
+- Connections tab -- needs `ProcessConnectionCollector` ported; same
+  table pattern.
+- Bandwidth tab -- needs `ProcessBandwidthCollector` ported. The Linux
+  (Netlink/raw-capture) and Windows (EStats/ETW) backend logic barely
+  touches Qt types to begin with, so this is mostly a search-and-replace
+  of `QString`/`QMap` for `std::string`/`std::map`.
+- Settings window, About window -- trivial as `ImGui::BeginPopupModal()`
+  blocks; no real porting work, just not written yet.
+- `--track-bandwidth` CLI flag, Windows UAC self-elevation -- logic
+  carries over unchanged from the Qt edition's `main.cpp` (it's pure
+  WinAPI, no Qt involved); just needs re-pasting into this `main.cpp`.
 
-- **Settings** (⚙ menu, top-left): data rate display unit (Bits — the
-  default, `kbit/s`/`Mbit/s`/`Gbit/s` — or Bytes, `KB/s`/`MB/s`/`GB/s`) and
-  the UI refresh rate in milliseconds. Applies to network throughput, disk
-  I/O, and per-process bandwidth; cumulative totals (memory, disk space,
-  session totals) always stay in bytes. Persisted across restarts via
-  `QSettings` (an INI file on Linux, the registry on Windows).
+## The pattern to extend it
 
-## Command-line flags
+Every remaining tab follows the exact same shape as `ProcessesTab`:
 
-| Flag | Effect |
-|---|---|
-| *(none)* | Normal startup. No admin/elevated rights required on either platform. |
-| `-h`, `--help` | Prints usage information (including the `--track-bandwidth` details below) to the terminal and exits immediately — no window opens. |
-| `--track-bandwidth` | Adds the **Bandwidth** tab (per-process download/upload, TCP + UDP). On Windows, if not already running elevated, the app relaunches itself with a UAC prompt (cancelling falls back to a normal, non-elevated launch without the tab). On Linux, TCP works without any special privileges; UDP additionally needs root or `CAP_NET_RAW` on the binary — without it, the Bandwidth tab still opens with TCP data and a status message explaining UDP is unavailable. |
+1. A `Collector` class (port the matching one from the Qt edition,
+   swapping `QString`/`QVector`/`QMap` for `std::string`/`std::vector`/
+   `std::map` -- the platform API calls themselves don't change at all).
+2. A `SomethingTab` class with `updateData(...)` (called on a poll timer
+   from `App::draw()`) and `draw()` (called every frame, builds an
+   `ImGui::BeginTable` or `ImPlot::PlotLine`).
+3. Wire it into `App::draw()`'s tab bar, replacing the matching
+   `drawStubTab(...)` call.
 
-```bash
-# Linux/Jetson -- TCP works with no elevation; for UDP too, either:
-sudo setcap cap_net_raw+ep ./TaskManager   # recommended: one-time, binds to just this binary
-./TaskManager --track-bandwidth
-# ...or:
-sudo ./TaskManager --track-bandwidth
-
-# Windows -- triggers one UAC prompt, covers both TCP and UDP
-TaskManager.exe --track-bandwidth
-```
-
-## Project layout
-
-```
-TaskManager/
-├── CMakeLists.txt            # top-level build, platform detection, Qt5/Qt6
-├── CMakePresets.json         # convenience presets for VS Code / CLI
-├── include/                  # public headers (platform-agnostic)
-├── src/
-│   ├── main.cpp
-│   ├── MainWindow.cpp        # Qt UI: Processes / Performance / Network tabs
-│   ├── ProcessModel.cpp      # QAbstractTableModel for the process table
-│   ├── HistoryChartWidget.cpp# rolling QtCharts line-chart widget
-│   ├── FormatUtils.cpp
-│   └── platform/
-│       ├── linux/            # /proc, statvfs, ioctl/ethtool, sysfs, NVML dlopen
-│       └── win/               # Toolhelp32, PDH, IP Helper (GetIfTable2)
-└── .vscode/                  # tasks.json, launch.json, settings.json
-```
-
-Each collector (`ProcessCollector`, `SystemStatsCollector`,
-`NetworkStatsCollector`, `GpuStatsCollector`) has a single header in
-`include/` and a platform-specific `.cpp` in `src/platform/{linux,win}/`.
-CMake picks the right `.cpp` files based on `WIN32`/`UNIX`, so the rest of
-the codebase (UI, models) never contains `#ifdef` platform branches.
-
-## Prerequisites
-
-### Ubuntu 22.04 / 24.04 (x86_64 and ARMv8/Jetson)
+## Building
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake ninja-build gdb \
-    qt6-base-dev qt6-charts-dev libgl1-mesa-dev
+cmake -S . -B build -G Ninja      # Linux/Jetson
+cmake --build build
+./build/TaskManagerImGui
 
-# Ubuntu 22.04 ships Qt6 in universe as of 22.04.x; if unavailable, use Qt5:
-# sudo apt install -y qtbase5-dev libqt5charts5-dev
+# Windows
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
 ```
 
-On Jetson (JetPack), the same `apt` packages work — the CMake script detects
-`/etc/nv_tegra_release` automatically and enables the Tegra GPU sysfs
-backend; no CUDA/NVML/JetPack SDK components are required to build.
+First configure will take a minute or two -- it's cloning GLFW/Dear
+ImGui/ImPlot from GitHub via `FetchContent`. Needs network access and git
+on the build machine (only at configure time, not at runtime).
 
-### Windows 10/11
+## Honest caveat
 
-1. Install **Visual Studio 2022** (Desktop development with C++ workload) or
-   the standalone **Build Tools for Visual Studio 2022**.
-2. Install **CMake** (3.21+) and add it to `PATH`.
-3. Install **Qt 6** (or Qt 5.15) via the Qt online installer, selecting the
-   MSVC 2019/2022 64-bit component, plus **Qt Charts**.
-4. Make sure Qt's `<QtInstall>\<version>\msvc2022_64\lib\cmake` directory is
-   discoverable — either add it to `CMAKE_PREFIX_PATH` or set the
-   environment variable:
-   ```powershell
-   setx CMAKE_PREFIX_PATH "C:\Qt\6.7.2\msvc2022_64"
-   ```
-
-## Building — command line
-
-```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --parallel
-./build/TaskManager        # Linux
-# build\Debug\TaskManager.exe   on Windows (MSVC generator)
-```
-
-If CMake can't find Qt automatically, pass it explicitly:
-
-```bash
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/Qt/6.x/gcc_64
-```
-
-## Building — VS Code
-
-This repo ships a full `.vscode/` setup:
-
-- **`settings.json`** — points `CMake Tools` and the C/C++ extension at a
-  Ninja-based build directory and `compile_commands.json` for IntelliSense.
-- **`tasks.json`** — `CMake: Configure`, `CMake: Build (Debug/Release)`,
-  `CMake: Clean`, `Run TaskManager`.
-- **`launch.json`** — three debug targets:
-  - *Debug TaskManager (Linux / gdb)* — for Ubuntu 22/24, x86_64 or ARMv8/Jetson.
-  - *Debug TaskManager (Windows / MSVC)* — uses the `cppvsdbg` debugger.
-  - *Debug TaskManager (Windows / MinGW gdb)* — if you build with MinGW instead.
-- **`extensions.json`** — recommends the CMake Tools and C/C++ extensions.
-
-Steps:
-
-1. Install the recommended extensions (VS Code will prompt you).
-2. Open the folder in VS Code.
-3. `Ctrl+Shift+P` → **CMake: Select a Kit** → pick your compiler (GCC on
-   Linux/Jetson, MSVC on Windows).
-4. `F5` to build (via the `preLaunchTask`) and start debugging, or
-   `Ctrl+Shift+B` to just build.
-
-## Notes & extension points
-
-- **Per-thread CPU%** is currently reported as 0 in the thread expansion
-  view; wiring it up requires keeping a previous-sample map keyed by
-  `(pid, tid)`, analogous to what `ProcessCollector::collect()` already does
-  per-process. Left as a clearly marked extension point in
-  `ProcessBackendLinux.cpp` / `ProcessBackendWin.cpp`.
-- **Windows per-disk I/O throughput** (`SystemStatsCollector::collectDiskIo`)
-  currently returns empty; extend with `PhysicalDisk(*)\Disk Read Bytes/sec`
-  PDH counters following the same pattern as `GpuBackendWin.cpp`.
-- **Windows GPU total VRAM** requires DXGI adapter enumeration
-  (`IDXGIFactory1::EnumAdapters1` + `DXGI_ADAPTER_DESC`); the PDH-only path
-  currently reports used memory but not total.
-- The app polls processes every 1.5 s and system/network/GPU stats every 1 s;
-  tune `kProcessPollMs` / `kStatsPollMs` in `MainWindow.cpp`.
+None of this has been compiled. GLFW/ImGui/ImPlot's exact API surface
+(especially `ImGuiTableSortSpecs`, `ImGuiListClipper`, and the OpenGL3
+loader header interaction with GLFW's own `gl.h`) is based on my
+knowledge of these libraries, not a verified build. Expect at least one
+round of compiler-error fixes on real hardware, same as every other part
+of this project so far -- please paste the first errors you hit and
+we'll work through them.

@@ -1,218 +1,132 @@
-#include "MainWindow.h"
+#include "App.h"
+#include "Theme.h"
 
-#include <QApplication>
-#include <QStyleFactory>
-#include <QPalette>
-#include <QColor>
-#include <QFile>
-#include <QTextStream>
-#include <QFont>
-#include <QString>
-#include <string>
-#include <iostream>
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include "implot.h"
 
-#ifdef Q_OS_WIN
-#include <windows.h>
-#include <shellapi.h>
-#endif
+// Deliberately NOT using GLFW_INCLUDE_NONE here: GLFW's default behavior
+// of pulling in the system's gl.h is exactly what declares the legacy
+// GL 1.1 functions used below (glViewport/glClear/glClearColor). Dear
+// ImGui's bundled OpenGL3 loader (via imgui_impl_opengl3.h above) only
+// adds function pointers for GL 3.x+ entry points beyond that -- it's
+// designed to coexist with GLFW's default gl.h, not replace it. This
+// matches Dear ImGui's own official example_glfw_opengl3/main.cpp.
+#include <GLFW/glfw3.h>
+#include <cstdio>
 
 namespace {
-
-// Builds the dark QPalette that backs the .qss theme. Setting this on the
-// QApplication (in addition to the stylesheet) ensures widgets/dialogs that
-// QSS doesn't fully reach -- native color pickers, some message box chrome,
-// disabled-state colors -- still render correctly in dark mode instead of
-// falling back to the OS's light palette.
-QPalette buildDarkPalette() {
-    QPalette p;
-
-    const QColor bgBase("#0d1117");
-    const QColor bgSurface("#131822");
-    const QColor bgElevated("#1a2029");
-    const QColor border("#262c38");
-    const QColor textPrimary("#e7eaf0");
-    const QColor textSecondary("#939bb0");
-    const QColor textTertiary("#5f6a80");
-    const QColor accent("#38bdf8");
-
-    p.setColor(QPalette::Window, bgBase);
-    p.setColor(QPalette::WindowText, textPrimary);
-    p.setColor(QPalette::Base, bgSurface);
-    p.setColor(QPalette::AlternateBase, bgElevated);
-    p.setColor(QPalette::ToolTipBase, bgElevated);
-    p.setColor(QPalette::ToolTipText, textPrimary);
-    p.setColor(QPalette::Text, textPrimary);
-    p.setColor(QPalette::PlaceholderText, textTertiary);
-    p.setColor(QPalette::Button, bgElevated);
-    p.setColor(QPalette::ButtonText, textPrimary);
-    p.setColor(QPalette::BrightText, Qt::white);
-    p.setColor(QPalette::Link, accent);
-    p.setColor(QPalette::Highlight, accent);
-    p.setColor(QPalette::HighlightedText, QColor("#0b0f14"));
-
-    p.setColor(QPalette::Disabled, QPalette::WindowText, textTertiary);
-    p.setColor(QPalette::Disabled, QPalette::Text, textTertiary);
-    p.setColor(QPalette::Disabled, QPalette::ButtonText, textTertiary);
-
-    Q_UNUSED(border);
-    Q_UNUSED(textSecondary);
-    return p;
+void glfwErrorCallback(int error, const char* description) {
+    std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
+}
 }
 
-// The command-line flags this app recognizes. --track-bandwidth opts into
-// the per-process Bandwidth tab (see ProcessBandwidthCollector).
-// Deliberately NOT the default, since on Windows it requires elevation (a
-// UAC prompt) -- see relaunchElevated() below. Everything else about
-// normal operation (Processes/Performance/Network/Connections tabs) never
-// needs admin rights, on either platform.
-constexpr const char* kTrackBandwidthFlag = "--track-bandwidth";
-constexpr const char* kHelpFlagLong = "--help";
-constexpr const char* kHelpFlagShort = "-h";
-
-bool hasFlag(int argc, char* argv[], const char* flag) {
-    for (int i = 1; i < argc; ++i) {
-        if (QString::fromLocal8Bit(argv[i]) == flag) return true;
+int main(int, char**) {
+    glfwSetErrorCallback(glfwErrorCallback);
+    if (!glfwInit()) {
+        std::fprintf(stderr, "Failed to initialize GLFW\n");
+        return 1;
     }
-    return false;
-}
 
-bool parseTrackBandwidthFlag(int argc, char* argv[]) {
-    return hasFlag(argc, argv, kTrackBandwidthFlag);
-}
-
-bool parseHelpFlag(int argc, char* argv[]) {
-    return hasFlag(argc, argv, kHelpFlagLong) || hasFlag(argc, argv, kHelpFlagShort);
-}
-
-void printHelp() {
-    std::cout <<
-        "TaskManager -- cross-platform system monitor\n"
-        "\n"
-        "Usage: TaskManager [options]\n"
-        "\n"
-        "Options:\n"
-        "  -h, --help          Show this help message and exit.\n"
-        "\n"
-        "  --track-bandwidth   Enable the Bandwidth tab (per-process download/\n"
-        "                      upload, TCP + UDP).\n"
-        "\n"
-        "                      Windows: requires Administrator rights and\n"
-        "                      triggers a UAC prompt on launch; cancelling the\n"
-        "                      prompt falls back to a normal launch without the\n"
-        "                      tab, rather than refusing to start.\n"
-        "\n"
-        "                      Linux: TCP works without elevation. UDP\n"
-        "                      additionally needs root or the CAP_NET_RAW\n"
-        "                      capability on the binary, e.g.:\n"
-        "                        sudo setcap cap_net_raw+ep <path-to-TaskManager>\n"
-        "                      Without it, the Bandwidth tab still opens with\n"
-        "                      TCP data and a status note explaining why UDP\n"
-        "                      is unavailable.\n"
-        "\n"
-        "Without any options, TaskManager starts normally with the Processes,\n"
-        "Performance, Network, and Connections tabs. No admin/elevated rights\n"
-        "are required for normal operation on either platform.\n"
-        "\n"
-        "The data rate display unit (bits or bytes) and the UI refresh rate\n"
-        "can be changed at any time from the Settings menu inside the app.\n"
-        << std::flush;
-}
-
-#ifdef Q_OS_WIN
-bool isProcessElevated() {
-    bool elevated = false;
-    HANDLE token = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-        TOKEN_ELEVATION elevation{};
-        DWORD size = sizeof(elevation);
-        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
-            elevated = elevation.TokenIsElevated != 0;
-        }
-        CloseHandle(token);
-    }
-    return elevated;
-}
-
-// Relaunches the current executable elevated (triggers a UAC prompt) with
-// the same command-line arguments. Returns true if the elevated instance
-// was launched successfully -- the caller should exit(0) immediately
-// afterward so there's never two copies running side by side. Returns
-// false if the user cancelled the UAC prompt or elevation otherwise
-// failed; the caller should then fall back to running normally without
-// the flag's feature rather than refusing to start at all.
-bool relaunchElevated(int argc, char* argv[]) {
-    wchar_t exePath[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
-
-    QString args;
-    for (int i = 1; i < argc; ++i) {
-        args += QString::fromLocal8Bit(argv[i]);
-        if (i + 1 < argc) args += ' ';
-    }
-    std::wstring argsW = args.toStdWString();
-
-    SHELLEXECUTEINFOW sei{};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpVerb = L"runas";
-    sei.lpFile = exePath;
-    sei.lpParameters = argsW.c_str();
-    sei.nShow = SW_SHOWNORMAL;
-
-    if (!ShellExecuteExW(&sei)) {
-        return false; // most commonly: user clicked "No" on the UAC prompt
-    }
-    if (sei.hProcess) CloseHandle(sei.hProcess);
-    return true;
-}
+    // OpenGL 3.3 core -- broadly supported on Linux/Jetson/Windows alike,
+    // matches what imgui_impl_opengl3's bundled loader targets by default.
+    const char* glslVersion = "#version 330";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
 
-} // namespace
-
-int main(int argc, char* argv[]) {
-    if (parseHelpFlag(argc, argv)) {
-        printHelp();
-        return 0;
+    GLFWwindow* window = glfwCreateWindow(1280, 800, "TaskManager", nullptr, nullptr);
+    if (!window) {
+        std::fprintf(stderr, "Failed to create GLFW window\n");
+        glfwTerminate();
+        return 1;
     }
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1); // vsync -- keeps polling/redraw cheap on the CPU
 
-    bool trackBandwidth = parseTrackBandwidthFlag(argc, argv);
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImPlot::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = nullptr; // no imgui.ini clutter next to the binary
 
-#ifdef Q_OS_WIN
-    // The Bandwidth tab's Windows backend (TCP Extended Statistics API)
-    // requires admin rights. Only ask for elevation when the flag was
-    // actually passed -- default launches never see a UAC prompt.
-    if (trackBandwidth && !isProcessElevated()) {
-        if (relaunchElevated(argc, argv)) {
-            return 0; // the elevated instance takes over; this one exits quietly
-        }
-        // Elevation was cancelled or failed -- still start normally, just
-        // without bandwidth tracking, rather than not starting at all.
-        trackBandwidth = false;
-    }
+    // ImGui's built-in default font (ProggyClean) is a small pixel-art
+    // style font designed to look crisp only at its native ~13px size --
+    // it was never meant to be rasterized larger with antialiasing, which
+    // is why it looked noticeably blurrier/blockier than the Qt edition's
+    // native Segoe UI rendering. Load a real system TrueType font instead,
+    // with proper oversampling for smooth antialiased glyphs at any size.
+    // Falls back to the improved-but-still-limited default font only if
+    // no system font could be found at any of the well-known paths.
+    ImFontConfig fontConfig;
+    fontConfig.OversampleH = 3;
+    fontConfig.OversampleV = 1;
+    fontConfig.PixelSnapH = true;
+
+    const char* candidateFonts[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\segoeui.ttf",   // same font the Qt edition used
+        "C:\\Windows\\Fonts\\arial.ttf",
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",             // Arch
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", // Fedora
 #endif
+    };
 
-    QApplication app(argc, argv);
-    QApplication::setApplicationName("TaskManager");
-    QApplication::setOrganizationName("TaskManager");
-
-    // Fusion style renders consistently across Linux/Windows/Jetson desktops
-    // and is the style QSS themes correctly on all three.
-    QApplication::setStyle(QStyleFactory::create("Fusion"));
-    QApplication::setPalette(buildDarkPalette());
-
-    // Clean UI sans-serif; Qt falls back to a sensible system default on
-    // platforms where "Segoe UI" isn't installed (e.g. Linux/Jetson).
-    QFont appFont("Segoe UI", 9);
-    QApplication::setFont(appFont);
-
-    QFile styleFile(":/style.qss");
-    if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream stream(&styleFile);
-        app.setStyleSheet(stream.readAll());
+    ImFont* loadedFont = nullptr;
+    for (const char* path : candidateFonts) {
+        if (FILE* f = std::fopen(path, "rb")) {
+            std::fclose(f);
+            loadedFont = io.Fonts->AddFontFromFileTTF(path, 18.0f, &fontConfig);
+            if (loadedFont) break;
+        }
+    }
+    if (!loadedFont) {
+        fontConfig.SizePixels = 18.0f;
+        io.Fonts->AddFontDefault(&fontConfig);
     }
 
-    MainWindow window(trackBandwidth);
-    window.show();
+    Theme::apply();
 
-    return app.exec();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init(glslVersion);
+
+    App app;
+
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        app.draw();
+
+        ImGui::Render();
+        int displayW, displayH;
+        glfwGetFramebufferSize(window, &displayW, &displayH);
+        glViewport(0, 0, displayW, displayH);
+        glClearColor(0.05f, 0.07f, 0.09f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(window);
+    }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
+    ImGui::DestroyContext();
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
 }
