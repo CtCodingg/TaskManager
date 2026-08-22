@@ -42,7 +42,7 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Third-party sources, fetched at configure time (no system install needed).
-# All MIT/zlib-licensed -- no GPL/LGPL entanglement like Qt Charts had.
+# All MIT/zlib-licensed
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
@@ -146,12 +146,9 @@ endif()
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-# Unlike the Qt edition, there's no windeployqt step needed here: GLFW is
-# fetched and linked as a STATIC library by default (FetchContent above
-# doesn't set BUILD_SHARED_LIBS), so there are no runtime DLLs to deploy
+# GLFW is fetched and linked as a STATIC library by default (FetchContent
+# above doesn't set BUILD_SHARED_LIBS), so there are no runtime DLLs to deploy
 # alongside the executable -- OpenGL itself is a system driver library on
 # every target platform (opengl32.dll on Windows, libGL on Linux/Jetson).
 include(GNUInstallDirs)
 install(TARGETS CtTaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-
-message(STATUS "CtTaskManager: Qt-free build, GLFW+Dear ImGui+ImPlot fetched via FetchContent")
