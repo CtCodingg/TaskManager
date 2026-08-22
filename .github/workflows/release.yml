@@ -1,0 +1,53 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      # HIER DEINEN BUILD-SCHRITT EINFÜGEN
+      - name: Beispiel-Build
+        run: |
+          echo "Baut das Projekt für ${{ matrix.os }}"
+          # Erstelle eine Dummy-Datei als Release-Paket
+          mkdir -p dist
+          echo "App-Inhalt" > dist/app-${{ matrix.os }}.txt
+
+      - name: Artefakte hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.os }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Artefakte herunterladen
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+
+      - name: Ordnerstruktur anpassen
+        run: ls -R downloaded-artifacts
+
+      - name: GitHub Release erstellen
+        uses: softprops/action-gh-release@v1
+        with:
+          files: downloaded-artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
