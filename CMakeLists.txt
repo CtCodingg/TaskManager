@@ -148,6 +148,11 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS TaskManager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# Ship the repo-root LICENCE file next to the installed binary, under a
+# "licences" subfolder (bin/licences/LICENCE after install).
+install(FILES "${CMAKE_SOURCE_DIR}/LICENCE"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/licences")
+
 # ---------------------------------------------------------------------------
 # Windows: run windeployqt against the INSTALLED executable (not the raw
 # build tree), so that `cmake --install build --prefix <dir>` produces a
