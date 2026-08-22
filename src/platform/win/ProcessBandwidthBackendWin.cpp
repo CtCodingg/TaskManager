@@ -321,29 +321,21 @@ ProcessBandwidthCollector::ProcessBandwidthCollector() : m_impl(new Impl()) {}
 ProcessBandwidthCollector::~ProcessBandwidthCollector() { delete m_impl; }
 
 bool ProcessBandwidthCollector::start() {
-    // --- TCP: EStats probe ---
+    // --- TCP: structural check only ---
+    // Elevation (Administrator) is already guaranteed by main.cpp before
+    // this collector is ever started with --track-bandwidth active, so we
+    // don't probe a specific connection here to "confirm" TCP works --
+    // that used to pick an arbitrary connection (e.g. conns[0]) and call
+    // SetPerTcpConnectionEStats on it, which can fail for reasons that
+    // have nothing to do with admin rights (a connection already in
+    // TIME_WAIT/CLOSE_WAIT, a protected system connection, etc.), wrongly
+    // marking TCP as globally unavailable for the whole session even
+    // though every OTHER connection would have worked fine. Per-connection
+    // failures are already tolerated gracefully inside collect() (a
+    // connection that can't be enabled is just skipped that cycle).
     std::vector<MIB_TCPROW_OWNER_PID> conns;
     QString tcpErr;
-    bool tcpProbeOk = enumerateTcp4(conns, tcpErr);
-    bool tcpAvailable = false;
-
-    if (tcpProbeOk) {
-        if (!conns.empty()) {
-            MIB_TCPROW row = toPlainRow(conns[0]);
-            TCP_ESTATS_DATA_RW_v0 rw{};
-            rw.EnableCollection = TRUE;
-            DWORD result = SetPerTcpConnectionEStats(&row, TcpConnectionEstatsData,
-                reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
-            tcpAvailable = (result == NO_ERROR);
-            if (!tcpAvailable) {
-                tcpErr = (result == ERROR_ACCESS_DENIED)
-                    ? "Administrator privileges required for TCP bandwidth tracking."
-                    : QString("Failed to enable TCP statistics collection (error %1).").arg(result);
-            }
-        } else {
-            tcpAvailable = true; // nothing to probe against yet; verified on first real collect()
-        }
-    }
+    bool tcpAvailable = enumerateTcp4(conns, tcpErr);
 
     // --- UDP: ETW session ---
     QString udpErr;

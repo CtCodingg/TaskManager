@@ -352,7 +352,7 @@ QWidget* MainWindow::buildConnectionsTab() {
     auto* hint = new QLabel(
         "This is a connection-level view (who's connected to what, and how) -- "
         "it does not show bytes sent/received per process. Launch with "
-        "--track-bandwidth for a TCP bandwidth-per-process view (see the "
+        "--track-bandwidth for a per-process download/upload view (see the "
         "Bandwidth tab; requires Administrator on Windows).");
     hint->setObjectName("sectionHint");
     hint->setWordWrap(true);
@@ -382,11 +382,11 @@ QWidget* MainWindow::buildBandwidthTab() {
     layout->addWidget(m_bandwidthTable, 1);
 
     auto* hint = new QLabel(
-        "TCP-only approximation (Linux: Netlink socket-diag; Windows: TCP "
-        "Extended Statistics API). UDP/QUIC traffic (e.g. some video calls, "
-        "HTTP/3) is not counted on either platform. Traffic in the brief "
+        "TCP + UDP tracking (Linux: Netlink socket-diag + raw packet capture; "
+        "Windows: TCP Extended Statistics API + ETW). Traffic in the brief "
         "window between a connection closing and the next poll is not "
-        "counted (slightly under-, never over-counted).");
+        "counted (slightly under-, never over-counted). On Windows, TCP "
+        "tracking covers IPv4 only.");
     hint->setObjectName("sectionHint");
     hint->setWordWrap(true);
     layout->addWidget(hint);
