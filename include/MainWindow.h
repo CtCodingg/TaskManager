@@ -43,6 +43,7 @@ private slots:
     void onProcessContextMenu(const QPoint& pos);
     void onConnectionsFilterChanged(const QString& text);
     void onOpenSettings();
+    void onOpenAbout();
 
 private:
     // --- Data collectors (platform-agnostic front, platform impl behind) ---

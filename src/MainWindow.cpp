@@ -4,6 +4,7 @@
 #include "FormatUtils.h"
 #include "UiTheme.h"
 #include "SettingsDialog.h"
+#include "AboutDialog.h"
 
 #include <QTableView>
 #include <QHeaderView>
@@ -112,12 +113,20 @@ void MainWindow::onOpenSettings() {
     }
 }
 
+void MainWindow::onOpenAbout() {
+    AboutDialog dialog(this);
+    dialog.exec();
+}
+
 // ---------------------------------------------------------------------------
 // UI construction
 // ---------------------------------------------------------------------------
 void MainWindow::buildUi() {
     QAction* settingsAction = menuBar()->addAction("⚙ Settings");
     connect(settingsAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
+
+    QAction* aboutAction = menuBar()->addAction("ℹ About");
+    connect(aboutAction, &QAction::triggered, this, &MainWindow::onOpenAbout);
 
     auto* tabs = new QTabWidget(this);
     tabs->addTab(buildProcessesTab(), "Processes");

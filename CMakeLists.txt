@@ -63,6 +63,7 @@ set(TM_SOURCES
     src/HistoryChartWidget.cpp
     src/FormatUtils.cpp
     src/SettingsDialog.cpp
+    src/AboutDialog.cpp
 )
 
 set(TM_HEADERS
@@ -78,6 +79,7 @@ set(TM_HEADERS
     include/FormatUtils.h
     include/UiTheme.h
     include/SettingsDialog.h
+    include/AboutDialog.h
     include/Types.h
 )
 
@@ -117,6 +119,7 @@ target_link_libraries(TaskManager PRIVATE
 target_compile_definitions(TaskManager PRIVATE
     $<$<BOOL:${TM_IS_JETSON}>:TM_IS_JETSON>
     $<$<BOOL:${TM_ARCH_ARM64}>:TM_ARCH_ARM64>
+    TM_VERSION_STRING="${PROJECT_VERSION}"
 )
 
 # ---------------------------------------------------------------------------
