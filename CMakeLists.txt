@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.16)
 cmake_policy(SET CMP0091 NEW)
 
 project(CtTaskManager
-    VERSION 1.0.0
+    VERSION 0.1.0
     DESCRIPTION "Cross-platform Task Manager"
     LANGUAGES CXX
 )
@@ -53,6 +53,13 @@ FetchContent_Declare(glfw
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+# GLFW 3.4+ builds both X11 and Wayland backends on Linux by default.
+# Wayland support requires the wayland-scanner tool + Wayland/xkbcommon
+# dev headers, which aren't installed by default on most systems
+# (including GitHub's ubuntu-22.04 runner) and aren't needed for this
+# app -- X11 alone is sufficient. Disabling Wayland avoids that extra
+# dependency entirely rather than adding more packages to pull in.
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
