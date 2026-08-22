@@ -71,6 +71,8 @@ set(TM_HEADERS
     include/SystemStatsCollector.h
     include/NetworkStatsCollector.h
     include/GpuStatsCollector.h
+    include/ProcessConnectionCollector.h
+    include/ProcessBandwidthCollector.h
     include/HistoryChartWidget.h
     include/FormatUtils.h
     include/UiTheme.h
@@ -83,6 +85,8 @@ if(WIN32)
         src/platform/win/SystemBackendWin.cpp
         src/platform/win/NetworkBackendWin.cpp
         src/platform/win/GpuBackendWin.cpp
+        src/platform/win/ProcessConnectionBackendWin.cpp
+        src/platform/win/ProcessBandwidthBackendWin.cpp
     )
 elseif(UNIX)
     list(APPEND TM_SOURCES
@@ -90,6 +94,8 @@ elseif(UNIX)
         src/platform/linux/SystemBackendLinux.cpp
         src/platform/linux/NetworkBackendLinux.cpp
         src/platform/linux/GpuBackendLinux.cpp
+        src/platform/linux/ProcessConnectionBackendLinux.cpp
+        src/platform/linux/ProcessBandwidthBackendLinux.cpp
     )
 endif()
 
@@ -112,10 +118,12 @@ target_compile_definitions(TaskManager PRIVATE
 )
 
 # ---------------------------------------------------------------------------
-# Windows: PDH (perf counters), IP Helper (network), PSAPI, SetupAPI (GPU enum)
+# Windows: PDH (perf counters), IP Helper (network), PSAPI, SetupAPI (GPU enum),
+# Shell32 (ShellExecuteExW, the --track-bandwidth elevation prompt),
+# Tdh (Trace Data Helper, decodes ETW events for UDP bandwidth tracking)
 # ---------------------------------------------------------------------------
 if(WIN32)
-    target_link_libraries(TaskManager PRIVATE pdh iphlpapi ws2_32 psapi setupapi)
+    target_link_libraries(TaskManager PRIVATE pdh iphlpapi ws2_32 psapi setupapi shell32 tdh)
     target_compile_definitions(TaskManager PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 

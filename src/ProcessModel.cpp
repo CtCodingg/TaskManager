@@ -11,6 +11,10 @@ ProcessModel::ProcessModel(QObject* parent) : QAbstractTableModel(parent) {}
 void ProcessModel::updateProcesses(const QVector<ProcessInfo>& processes) {
     beginResetModel();
     m_processes = processes;
+    m_pidToName.clear();
+    for (const ProcessInfo& p : m_processes) {
+        m_pidToName[p.pid] = p.name;
+    }
     applySort();
     endResetModel();
 }
@@ -23,6 +27,12 @@ const ProcessInfo* ProcessModel::processAt(int row) const {
 qint64 ProcessModel::pidForRow(int row) const {
     const ProcessInfo* p = processAt(row);
     return p ? p->pid : -1;
+}
+
+QString ProcessModel::nameForPid(qint64 pid) const {
+    auto it = m_pidToName.constFind(pid);
+    if (it != m_pidToName.constEnd()) return it.value();
+    return QString("(pid %1)").arg(pid);
 }
 
 int ProcessModel::rowCount(const QModelIndex& parent) const {

@@ -3,6 +3,8 @@
 #include "Types.h"
 #include <QAbstractTableModel>
 #include <QVector>
+#include <QMap>
+#include <QString>
 
 class ProcessModel : public QAbstractTableModel {
     Q_OBJECT
@@ -26,6 +28,13 @@ public:
     const ProcessInfo* processAt(int row) const;
     qint64 pidForRow(int row) const;
 
+    // Looks up the process name for a PID from the most recently collected
+    // process list. Used by the Connections tab to show a process name next
+    // to each connection without any extra system calls. Returns a
+    // placeholder like "(pid 1234)" if the PID isn't currently known (e.g.
+    // the process exited between polls).
+    QString nameForPid(qint64 pid) const;
+
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
@@ -34,6 +43,7 @@ public:
 
 private:
     QVector<ProcessInfo> m_processes;
+    QMap<qint64, QString> m_pidToName;
     int m_sortColumn = ColCpu;
     Qt::SortOrder m_sortOrder = Qt::DescendingOrder;
 

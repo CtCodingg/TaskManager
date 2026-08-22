@@ -27,30 +27,57 @@
 #include <QStyle>
 #include <QBrush>
 #include <QColor>
+#include <QSet>
 
 namespace {
 constexpr int kProcessPollMs = 1500;
 constexpr int kStatsPollMs = 1000;
+// Slower interval: on Linux this scans every process's /proc/<pid>/fd
+// table each poll, which is more expensive than the other collectors.
+constexpr int kConnectionsPollMs = 3000;
+constexpr int kBandwidthPollMs = 2000;
 }
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+MainWindow::MainWindow(bool enableBandwidthTracking, QWidget* parent)
+    : QMainWindow(parent), m_bandwidthTrackingEnabled(enableBandwidthTracking) {
     setWindowTitle("Task Manager");
     resize(1200, 800);
     buildUi();
 
     connect(&m_processTimer, &QTimer::timeout, this, &MainWindow::pollProcesses);
     connect(&m_statsTimer, &QTimer::timeout, this, &MainWindow::pollSystemStats);
+    connect(&m_connectionsTimer, &QTimer::timeout, this, &MainWindow::pollConnections);
     m_processTimer.start(kProcessPollMs);
     m_statsTimer.start(kStatsPollMs);
+    m_connectionsTimer.start(kConnectionsPollMs);
 
     // Immediate first poll so the UI isn't empty on launch
     pollProcesses();
     pollSystemStats();
+    pollConnections();
+
+    if (m_bandwidthTrackingEnabled) {
+        m_bandwidthCollector = new ProcessBandwidthCollector();
+        if (m_bandwidthCollector->start()) {
+            // start() can succeed "partially" -- e.g. on Linux, TCP works
+            // without elevation but UDP needs CAP_NET_RAW/root and may not
+            // be available. lastError() carries that note even on success.
+            m_bandwidthAvailabilityNote = m_bandwidthCollector->lastError();
+            connect(&m_bandwidthTimer, &QTimer::timeout, this, &MainWindow::pollBandwidth);
+            m_bandwidthTimer.start(kBandwidthPollMs);
+            pollBandwidth();
+        } else if (m_bandwidthStatusLabel) {
+            m_bandwidthStatusLabel->setText(
+                "Bandwidth tracking could not start: " + m_bandwidthCollector->lastError());
+        }
+    }
 
     statusBar()->showMessage("Ready");
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    delete m_bandwidthCollector;
+}
 
 // ---------------------------------------------------------------------------
 // UI construction
@@ -60,6 +87,10 @@ void MainWindow::buildUi() {
     tabs->addTab(buildProcessesTab(), "Processes");
     tabs->addTab(buildPerformanceTab(), "Performance");
     tabs->addTab(buildNetworkTab(), "Network");
+    tabs->addTab(buildConnectionsTab(), "Connections");
+    if (m_bandwidthTrackingEnabled) {
+        tabs->addTab(buildBandwidthTab(), "Bandwidth");
+    }
     setCentralWidget(tabs);
 }
 
@@ -252,6 +283,81 @@ QWidget* MainWindow::buildNetworkTab() {
     return container;
 }
 
+QWidget* MainWindow::buildConnectionsTab() {
+    auto* container = new QWidget();
+    auto* layout = new QVBoxLayout(container);
+
+    auto* topBar = new QHBoxLayout();
+    auto* searchLabel = new QLabel("Search:");
+    searchLabel->setObjectName("metricSubtle");
+    m_connectionsFilterEdit = new QLineEdit();
+    m_connectionsFilterEdit->setPlaceholderText("Filter by process, address, port, or state...");
+    connect(m_connectionsFilterEdit, &QLineEdit::textChanged, this, &MainWindow::onConnectionsFilterChanged);
+    topBar->addWidget(searchLabel);
+    topBar->addWidget(m_connectionsFilterEdit, 1);
+    layout->addLayout(topBar);
+
+    m_connectionsTable = new QTableWidget(0, 7);
+    m_connectionsTable->setHorizontalHeaderLabels({
+        "Process", "PID", "Protocol", "Local Address", "Remote Address", "State", "IP Version"
+    });
+    m_connectionsTable->horizontalHeader()->setStretchLastSection(true);
+    m_connectionsTable->verticalHeader()->setVisible(false);
+    m_connectionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_connectionsTable->setAlternatingRowColors(true);
+    m_connectionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_connectionsTable->setSortingEnabled(true);
+    layout->addWidget(m_connectionsTable, 1);
+
+    m_connectionsSummaryLabel = new QLabel("0 connections");
+    m_connectionsSummaryLabel->setObjectName("metricSubtle");
+    layout->addWidget(m_connectionsSummaryLabel);
+
+    auto* hint = new QLabel(
+        "This is a connection-level view (who's connected to what, and how) -- "
+        "it does not show bytes sent/received per process. Launch with "
+        "--track-bandwidth for a TCP bandwidth-per-process view (see the "
+        "Bandwidth tab; requires Administrator on Windows).");
+    hint->setObjectName("sectionHint");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    return container;
+}
+
+QWidget* MainWindow::buildBandwidthTab() {
+    auto* container = new QWidget();
+    auto* layout = new QVBoxLayout(container);
+
+    m_bandwidthStatusLabel = new QLabel("Starting bandwidth tracking...");
+    m_bandwidthStatusLabel->setObjectName("sectionHint");
+    m_bandwidthStatusLabel->setWordWrap(true);
+    layout->addWidget(m_bandwidthStatusLabel);
+
+    m_bandwidthTable = new QTableWidget(0, 5);
+    m_bandwidthTable->setHorizontalHeaderLabels({
+        "Process", "PID", "Download", "Upload", "Total (session)"
+    });
+    m_bandwidthTable->horizontalHeader()->setStretchLastSection(true);
+    m_bandwidthTable->verticalHeader()->setVisible(false);
+    m_bandwidthTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_bandwidthTable->setAlternatingRowColors(true);
+    m_bandwidthTable->setSortingEnabled(true);
+    layout->addWidget(m_bandwidthTable, 1);
+
+    auto* hint = new QLabel(
+        "TCP-only approximation (Linux: Netlink socket-diag; Windows: TCP "
+        "Extended Statistics API). UDP/QUIC traffic (e.g. some video calls, "
+        "HTTP/3) is not counted on either platform. Traffic in the brief "
+        "window between a connection closing and the next poll is not "
+        "counted (slightly under-, never over-counted).");
+    hint->setObjectName("sectionHint");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    return container;
+}
+
 // ---------------------------------------------------------------------------
 // Polling
 // ---------------------------------------------------------------------------
@@ -267,6 +373,14 @@ void MainWindow::pollProcesses() {
         .arg(processes.size())
         .arg(FormatUtils::percent(totalCpu))
         .arg(FormatUtils::bytes(totalMem)));
+
+    // Process names may have changed (or new PIDs appeared) since the last
+    // connections poll; re-render with cached connection data so the
+    // Connections tab's process-name column stays current without waiting
+    // for its own (slower) poll cycle.
+    if (m_connectionsTable) {
+        renderConnectionsTable(m_connectionsFilterEdit ? m_connectionsFilterEdit->text() : QString());
+    }
 }
 
 void MainWindow::pollSystemStats() {
@@ -285,6 +399,17 @@ void MainWindow::pollSystemStats() {
 
     NetworkStats net = m_networkCollector.collect();
     updateNetworkUi(net);
+}
+
+void MainWindow::pollConnections() {
+    m_lastConnections = m_connectionCollector.collect();
+    renderConnectionsTable(m_connectionsFilterEdit ? m_connectionsFilterEdit->text() : QString());
+}
+
+void MainWindow::pollBandwidth() {
+    if (!m_bandwidthCollector || !m_bandwidthCollector->isRunning()) return;
+    QMap<qint64, ProcessBandwidthStats> stats = m_bandwidthCollector->collect();
+    updateBandwidthUi(stats);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +584,134 @@ void MainWindow::updateNetworkUi(const NetworkStats& net) {
     }
 }
 
+namespace {
+// TCP state -> health color. ESTABLISHED is the "everything normal" case
+// (colored green like other healthy states elsewhere in the UI); LISTEN is
+// informational/neutral; the various teardown states get a warm color
+// since a connection stuck in TIME_WAIT/CLOSE_WAIT for a long time can
+// indicate a leak; UDP's "-" placeholder stays neutral.
+QColor colorForConnectionState(const QString& state) {
+    if (state == "ESTABLISHED") return UiTheme::levelGood();
+    if (state == "LISTEN") return UiTheme::accentBrand();
+    if (state == "-") return UiTheme::textSecondary();
+    if (state == "SYN_SENT" || state == "SYN_RECV") return UiTheme::levelWarn();
+    return UiTheme::textTertiary(); // TIME_WAIT, CLOSE_WAIT, CLOSING, LAST_ACK, ...
+}
+}
+
+void MainWindow::renderConnectionsTable(const QString& filterText) {
+    if (!m_connectionsTable) return;
+
+    const QString needle = filterText.trimmed();
+    QVector<const ProcessConnection*> visible;
+    visible.reserve(m_lastConnections.size());
+
+    for (const ProcessConnection& c : m_lastConnections) {
+        if (needle.isEmpty()) {
+            visible.push_back(&c);
+            continue;
+        }
+        const QString processName = m_processModel ? m_processModel->nameForPid(c.pid) : QString();
+        const QString haystack = QString("%1 %2 %3 %4 %5 %6")
+            .arg(processName)
+            .arg(c.pid)
+            .arg(c.protocol)
+            .arg(c.localAddress)
+            .arg(c.remoteAddress)
+            .arg(c.state);
+        if (haystack.contains(needle, Qt::CaseInsensitive)) {
+            visible.push_back(&c);
+        }
+    }
+
+    m_connectionsTable->setSortingEnabled(false);
+    m_connectionsTable->setRowCount(visible.size());
+
+    QSet<qint64> distinctPids;
+    for (int i = 0; i < visible.size(); ++i) {
+        const ProcessConnection& c = *visible[i];
+        distinctPids.insert(c.pid);
+
+        const QString processName = m_processModel ? m_processModel->nameForPid(c.pid) : QString::number(c.pid);
+        const QString localEndpoint = QString("%1:%2").arg(c.localAddress).arg(c.localPort);
+        const QString remoteEndpoint = c.remoteAddress.isEmpty() || c.remotePort == 0
+            ? QString("-")
+            : QString("%1:%2").arg(c.remoteAddress).arg(c.remotePort);
+
+        int col = 0;
+        m_connectionsTable->setItem(i, col++, new QTableWidgetItem(processName));
+
+        auto* pidItem = new QTableWidgetItem();
+        pidItem->setData(Qt::DisplayRole, c.pid);
+        m_connectionsTable->setItem(i, col++, pidItem);
+
+        m_connectionsTable->setItem(i, col++, new QTableWidgetItem(c.protocol));
+        m_connectionsTable->setItem(i, col++, new QTableWidgetItem(localEndpoint));
+        m_connectionsTable->setItem(i, col++, new QTableWidgetItem(remoteEndpoint));
+
+        auto* stateItem = new QTableWidgetItem(c.state);
+        stateItem->setForeground(QBrush(colorForConnectionState(c.state)));
+        m_connectionsTable->setItem(i, col++, stateItem);
+
+        m_connectionsTable->setItem(i, col++, new QTableWidgetItem(c.isIPv6 ? "IPv6" : "IPv4"));
+    }
+    m_connectionsTable->setSortingEnabled(true);
+
+    m_connectionsSummaryLabel->setText(QString("%1 connections across %2 processes")
+        .arg(visible.size())
+        .arg(distinctPids.size()));
+}
+
+void MainWindow::updateBandwidthUi(const QMap<qint64, ProcessBandwidthStats>& stats) {
+    if (!m_bandwidthTable) return;
+
+    QString statusText = stats.isEmpty()
+        ? "Tracking active. No processes with measurable traffic yet."
+        : QString("Tracking %1 process(es) with active traffic.").arg(stats.size());
+    if (!m_bandwidthAvailabilityNote.isEmpty()) {
+        statusText = m_bandwidthAvailabilityNote + "\n" + statusText;
+    }
+    m_bandwidthStatusLabel->setText(statusText);
+
+    m_bandwidthTable->setSortingEnabled(false);
+    m_bandwidthTable->setRowCount(stats.size());
+
+    int row = 0;
+    for (auto it = stats.constBegin(); it != stats.constEnd(); ++it, ++row) {
+        qint64 pid = it.key();
+        const ProcessBandwidthStats& s = it.value();
+        QString name = m_processModel ? m_processModel->nameForPid(pid) : QString::number(pid);
+
+        int col = 0;
+        m_bandwidthTable->setItem(row, col++, new QTableWidgetItem(name));
+
+        auto* pidItem = new QTableWidgetItem();
+        pidItem->setData(Qt::DisplayRole, pid);
+        m_bandwidthTable->setItem(row, col++, pidItem);
+
+        auto* downItem = new QTableWidgetItem(FormatUtils::bytesPerSec(s.rxBytesPerSec));
+        m_bandwidthTable->setItem(row, col++, downItem);
+
+        auto* upItem = new QTableWidgetItem(FormatUtils::bytesPerSec(s.txBytesPerSec));
+        m_bandwidthTable->setItem(row, col++, upItem);
+
+        QString totalText = QString("↓ %1  ↑ %2")
+            .arg(FormatUtils::bytes(s.rxBytesTotal))
+            .arg(FormatUtils::bytes(s.txBytesTotal));
+        m_bandwidthTable->setItem(row, col++, new QTableWidgetItem(totalText));
+    }
+    m_bandwidthTable->setSortingEnabled(true);
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
 void MainWindow::onProcessFilterChanged(const QString& text) {
     m_processProxy->setFilterFixedString(text);
+}
+
+void MainWindow::onConnectionsFilterChanged(const QString& text) {
+    renderConnectionsTable(text);
 }
 
 void MainWindow::onKillSelectedProcess() {

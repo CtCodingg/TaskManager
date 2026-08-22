@@ -128,6 +128,54 @@ struct NetworkStats {
 };
 
 // ----------------------------------------------------------------------------
+// Per-process network connections -- a CONNECTION-level view (who is
+// connected to what, over which protocol, in which state), not a byte
+// counter. This is always collected (Connections tab). For actual
+// bytes-per-second per process, see ProcessBandwidthStats below, which is
+// opt-in via the --track-bandwidth command-line flag.
+// ----------------------------------------------------------------------------
+struct ProcessConnection {
+    qint64  pid = 0;
+    QString protocol;       // "TCP" or "UDP"
+    QString localAddress;
+    quint16 localPort = 0;
+    QString remoteAddress;  // empty for listening / unconnected sockets
+    quint16 remotePort = 0;
+    QString state;          // TCP: ESTABLISHED/LISTEN/TIME_WAIT/...; UDP: "-"
+    bool    isIPv6 = false;
+};
+
+// ----------------------------------------------------------------------------
+// Per-process network bandwidth -- OPT-IN (see --track-bandwidth in
+// main.cpp), because unlike the always-on Connections view above, real
+// byte-level throughput per process needs heavier OS integration:
+//
+//   Linux:   Netlink socket-diag (NETLINK_SOCK_DIAG) with the TCP_INFO
+//            extension, reading tcpi_bytes_acked / tcpi_bytes_received per
+//            TCP socket (the same mechanism `ss -i` uses). No elevated
+//            privileges needed for your own processes' sockets.
+//
+//   Windows: the TCP Extended Statistics (EStats) API
+//            (Set/GetPerTcpConnectionEStats), reading DataBytesOut /
+//            DataBytesIn per IPv4 TCP connection. REQUIRES the process to
+//            run elevated (Administrator) -- main.cpp prompts for
+//            elevation when --track-bandwidth is passed.
+//
+// Both are TCP-only: UDP/QUIC traffic (e.g. some video calls, HTTP/3) is
+// not counted on either platform. Both are also connection-scoped:
+// traffic in the brief window between a connection closing and the next
+// poll is lost (slightly under-counted, never double-counted). This is a
+// reasonable approximation for interactive monitoring, not an exact
+// accounting tool.
+// ----------------------------------------------------------------------------
+struct ProcessBandwidthStats {
+    quint64 rxBytesPerSec = 0;
+    quint64 txBytesPerSec = 0;
+    quint64 rxBytesTotal = 0;  // cumulative since tracking started for this PID
+    quint64 txBytesTotal = 0;
+};
+
+// ----------------------------------------------------------------------------
 // GPU
 // ----------------------------------------------------------------------------
 struct GpuInfo {

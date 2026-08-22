@@ -7,6 +7,13 @@
 #include <QFile>
 #include <QTextStream>
 #include <QFont>
+#include <QString>
+#include <string>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 namespace {
 
@@ -51,9 +58,89 @@ QPalette buildDarkPalette() {
     return p;
 }
 
+// The one command-line flag this app recognizes: opts into the
+// per-process Bandwidth tab (see ProcessBandwidthCollector). Deliberately
+// NOT the default, since on Windows it requires elevation (a UAC prompt)
+// -- see relaunchElevated() below. Everything else about normal operation
+// (Processes/Performance/Network/Connections tabs) never needs admin
+// rights, on either platform.
+constexpr const char* kTrackBandwidthFlag = "--track-bandwidth";
+
+bool parseTrackBandwidthFlag(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        if (QString::fromLocal8Bit(argv[i]) == kTrackBandwidthFlag) return true;
+    }
+    return false;
+}
+
+#ifdef Q_OS_WIN
+bool isProcessElevated() {
+    bool elevated = false;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
+            elevated = elevation.TokenIsElevated != 0;
+        }
+        CloseHandle(token);
+    }
+    return elevated;
+}
+
+// Relaunches the current executable elevated (triggers a UAC prompt) with
+// the same command-line arguments. Returns true if the elevated instance
+// was launched successfully -- the caller should exit(0) immediately
+// afterward so there's never two copies running side by side. Returns
+// false if the user cancelled the UAC prompt or elevation otherwise
+// failed; the caller should then fall back to running normally without
+// the flag's feature rather than refusing to start at all.
+bool relaunchElevated(int argc, char* argv[]) {
+    wchar_t exePath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
+
+    QString args;
+    for (int i = 1; i < argc; ++i) {
+        args += QString::fromLocal8Bit(argv[i]);
+        if (i + 1 < argc) args += ' ';
+    }
+    std::wstring argsW = args.toStdWString();
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exePath;
+    sei.lpParameters = argsW.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&sei)) {
+        return false; // most commonly: user clicked "No" on the UAC prompt
+    }
+    if (sei.hProcess) CloseHandle(sei.hProcess);
+    return true;
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[]) {
+    bool trackBandwidth = parseTrackBandwidthFlag(argc, argv);
+
+#ifdef Q_OS_WIN
+    // The Bandwidth tab's Windows backend (TCP Extended Statistics API)
+    // requires admin rights. Only ask for elevation when the flag was
+    // actually passed -- default launches never see a UAC prompt.
+    if (trackBandwidth && !isProcessElevated()) {
+        if (relaunchElevated(argc, argv)) {
+            return 0; // the elevated instance takes over; this one exits quietly
+        }
+        // Elevation was cancelled or failed -- still start normally, just
+        // without bandwidth tracking, rather than not starting at all.
+        trackBandwidth = false;
+    }
+#endif
+
     QApplication app(argc, argv);
     QApplication::setApplicationName("TaskManager");
     QApplication::setOrganizationName("TaskManager");
@@ -74,7 +161,7 @@ int main(int argc, char* argv[]) {
         app.setStyleSheet(stream.readAll());
     }
 
-    MainWindow window;
+    MainWindow window(trackBandwidth);
     window.show();
 
     return app.exec();

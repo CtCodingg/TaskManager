@@ -32,6 +32,42 @@ builds and runs fine on machines without an NVIDIA driver.
   speed, link utilization %, and — the detailed part — **drop % and error %
   per interface**, computed each poll as
   `dropped / (successful + dropped) * 100`, plus cumulative counters.
+- **Connections** (always on, no special privileges): every active TCP/UDP
+  connection (IPv4 + IPv6) with owning process, local/remote address:port,
+  and state (ESTABLISHED/LISTEN/TIME_WAIT/...). Linux: `/proc/net/*` +
+  `/proc/<pid>/fd` inode matching. Windows: `GetExtendedTcpTable` /
+  `GetExtendedUdpTable`.
+- **Bandwidth per process** (opt-in via `--track-bandwidth`, see below):
+  download/upload rate and session totals per process, TCP **and** UDP.
+  - Linux TCP: Netlink socket-diag with the `TCP_INFO` extension (same as
+    `ss -i`), no elevated privileges needed.
+  - Linux UDP: raw `AF_PACKET` capture matched to local ports —
+    **requires root or `CAP_NET_RAW`** (`sudo setcap cap_net_raw+ep
+    ./TaskManager` is the recommended way to grant just this capability
+    to the binary, rather than running the whole app as root).
+  - Windows TCP: the TCP Extended Statistics (EStats) API.
+  - Windows UDP: ETW consumption from the `Microsoft-Windows-Kernel-Network`
+    provider (the same mechanism Task Manager's own Network column uses).
+  - Both TCP and UDP **require Administrator on Windows**, so this flag
+    triggers a UAC prompt; default launches never do.
+
+## Command-line flags
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Normal startup. No admin/elevated rights required on either platform. |
+| `--track-bandwidth` | Adds the **Bandwidth** tab (per-process download/upload, TCP + UDP). On Windows, if not already running elevated, the app relaunches itself with a UAC prompt (cancelling falls back to a normal, non-elevated launch without the tab). On Linux, TCP works without any special privileges; UDP additionally needs root or `CAP_NET_RAW` on the binary — without it, the Bandwidth tab still opens with TCP data and a status message explaining UDP is unavailable. |
+
+```bash
+# Linux/Jetson -- TCP works with no elevation; for UDP too, either:
+sudo setcap cap_net_raw+ep ./TaskManager   # recommended: one-time, binds to just this binary
+./TaskManager --track-bandwidth
+# ...or:
+sudo ./TaskManager --track-bandwidth
+
+# Windows -- triggers one UAC prompt, covers both TCP and UDP
+TaskManager.exe --track-bandwidth
+```
 
 ## Project layout
 
