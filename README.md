@@ -95,20 +95,3 @@ table's "User" column, relies on NSS, which breaks under full static linking).
 - The app polls processes/stats roughly every second; connections every
   ~3s and bandwidth every ~2s by default (see `App::pollIfDue`), all
   scaled by the Settings refresh-rate value.
-
-## Honest caveat
-
-This is a large amount of systems-level code written without a compiler
-to verify against. The highest-risk areas, in rough order:
-
-1. **ImPlot/ImGui table API details** (`ImGuiTableSortSpecs`,
-   `ImGuiListClipper`, `ImPlot::PlotLine` signatures).
-2. **Windows ETW property names** (`"PID"`, `"size"`) and task-name
-   matching for UDP bandwidth tracking -- never verified against a real
-   Windows machine.
-3. Everything else (the `/proc` parsing, Netlink, PDH, IP Helper code) is
-   built on well-documented, stable OS interfaces, so it's lower risk by
-   comparison.
-
-Expect at least one round of compiler-error fixes on real hardware --
-please paste the first errors you hit and we'll work through them.
