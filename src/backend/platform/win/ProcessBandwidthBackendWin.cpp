@@ -1,7 +1,26 @@
-// Per-process network bandwidth: TCP via the TCP Extended Statistics
-// (EStats) API (Set/GetPerTcpConnectionEStats), UDP via ETW consumption
-// from the Microsoft-Windows-Kernel-Network provider -- both REQUIRE
-// Administrator rights, enforced by main.cpp's elevation prompt.
+// Per-process network bandwidth, broken down by interface where possible.
+//
+// TCP: the TCP Extended Statistics (EStats) API
+// (Set/GetPerTcpConnectionEStats, tcpestats.h), reading cumulative
+// DataBytesOut/DataBytesIn per IPv4 TCP connection. Interface attribution
+// maps each connection's local IP address to an adapter via
+// GetAdaptersAddresses -- valid for TCP since the OS resolves a concrete
+// source IP for an established connection.
+//
+// UDP: ETW consumption from the Microsoft-Windows-Kernel-Network
+// provider. Unlike TCP, this collector does NOT attempt per-interface
+// attribution for UDP: doing so would require reliably extracting a
+// local-address property from the ETW event payload, and the exact
+// property name for that isn't confirmed against a real Windows machine
+// (see the PID/size property extraction below, which IS confirmed to
+// work -- adding an unverified address lookup on top would risk silently
+// wrong attribution rather than an honest "unattributed" bucket). All
+// UDP traffic is reported under the interface name "(unattributed)".
+//
+// BOTH mechanisms require the process to run elevated (Administrator).
+// main.cpp handles prompting for elevation when --track-bandwidth is
+// passed; this collector reports failure via lastError() if, for
+// whatever reason, it still isn't elevated.
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601
@@ -23,6 +42,7 @@
 #include <mutex>
 #include <map>
 #include <string>
+#include <utility>
 #include <cwchar>
 
 #pragma comment(lib, "iphlpapi.lib")
@@ -37,6 +57,52 @@ int64_t nowMs() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// Unattributed bucket name, used for UDP traffic (see file header) and
+// as a fallback for any TCP connection whose local address doesn't match
+// a currently-known adapter (e.g. queried mid-way through an adapter
+// change).
+constexpr const char* kUnattributed = "(unattributed)";
+
+std::string wideToUtf8(const wchar_t* w) {
+    if (!w) return {};
+    int size = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string out(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), size, nullptr, nullptr);
+    if (!out.empty() && out.back() == '\0') out.pop_back();
+    return out;
+}
+
+// Maps a local IPv4 address (network byte order DWORD, as stored in
+// MIB_TCPROW_OWNER_PID::dwLocalAddr) to its owning adapter's friendly
+// name, via GetAdaptersAddresses.
+std::map<DWORD, std::string> buildIpToInterfaceMap() {
+    std::map<DWORD, std::string> result;
+
+    ULONG bufLen = 0;
+    GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                          nullptr, nullptr, &bufLen);
+    if (bufLen == 0) return result;
+
+    std::vector<BYTE> buf(bufLen);
+    auto* addresses = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buf.data());
+    if (GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                              nullptr, addresses, &bufLen) != NO_ERROR) {
+        return result;
+    }
+
+    for (auto* adapter = addresses; adapter != nullptr; adapter = adapter->Next) {
+        std::string friendlyName = wideToUtf8(adapter->FriendlyName);
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr; unicast = unicast->Next) {
+            if (unicast->Address.lpSockaddr->sa_family != AF_INET) continue;
+            auto* sa = reinterpret_cast<struct sockaddr_in*>(unicast->Address.lpSockaddr);
+            result[sa->sin_addr.S_un.S_addr] = friendlyName;
+        }
+    }
+    return result;
+}
+
+// --- TCP: EStats ---------------------------------------------------------
 struct ConnKey {
     DWORD localAddr = 0, localPort = 0, remoteAddr = 0, remotePort = 0;
     bool operator<(const ConnKey& o) const {
@@ -175,7 +241,9 @@ public:
     EVENT_TRACE_PROPERTIES* sessionProps = nullptr;
     bool udpSessionActive = false;
 
-    std::map<int64_t, ProcessBandwidthStats> cumulativeByPid;
+    // Running totals per (pid, interface) -- only ever incremented by
+    // newly-computed deltas each poll, never overwritten.
+    std::map<std::pair<int64_t, std::string>, ProcessBandwidthStats> cumulativeByKey;
 
     ~Impl() { stopUdpSession(); }
 
@@ -284,7 +352,7 @@ bool ProcessBandwidthCollector::start() {
     m_impl->running = true;
     m_impl->enabledConns.clear();
     m_impl->prevByConn.clear();
-    m_impl->cumulativeByPid.clear();
+    m_impl->cumulativeByKey.clear();
     m_impl->prevSampleMs = nowMs();
     return true;
 }
@@ -297,21 +365,24 @@ void ProcessBandwidthCollector::stop() {
 bool ProcessBandwidthCollector::isRunning() const { return m_impl->running; }
 std::string ProcessBandwidthCollector::lastError() const { return m_impl->error; }
 
-std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
-    std::map<int64_t, ProcessBandwidthStats> result;
+std::vector<ProcessInterfaceBandwidth> ProcessBandwidthCollector::collect() {
+    std::vector<ProcessInterfaceBandwidth> result;
     if (!m_impl->running) return result;
 
     int64_t now = nowMs();
     double dtSec = m_impl->prevSampleMs ? (now - m_impl->prevSampleMs) / 1000.0 : 1.0;
     if (dtSec <= 0) dtSec = 1.0;
 
-    std::map<int64_t, ProcessBandwidthStats> rateThisPoll;
+    using Key = std::pair<int64_t, std::string>;
+    std::map<Key, ProcessBandwidthStats> rateThisPoll;
 
+    // --- TCP (EStats), attributed by local-IP -> adapter ---
     if (m_impl->tcpAvailable) {
         std::vector<MIB_TCPROW_OWNER_PID> conns;
         std::string err;
         if (enumerateTcp4(conns, err)) {
             std::map<ConnKey, ConnBandwidth> currentByConn;
+            std::map<DWORD, std::string> ipToIface = buildIpToInterfaceMap();
 
             for (const auto& ownerRow : conns) {
                 ConnKey key{ownerRow.dwLocalAddr, ownerRow.dwLocalPort, ownerRow.dwRemoteAddr, ownerRow.dwRemotePort};
@@ -338,6 +409,9 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
                 currentByConn[key] = cb;
 
                 int64_t pid = static_cast<int64_t>(ownerRow.dwOwningPid);
+                std::string iface = kUnattributed;
+                auto ifaceIt = ipToIface.find(ownerRow.dwLocalAddr);
+                if (ifaceIt != ipToIface.end()) iface = ifaceIt->second;
 
                 uint64_t prevOut = 0, prevIn = 0;
                 auto prevIt = m_impl->prevByConn.find(key);
@@ -349,10 +423,11 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
                 uint64_t txDelta = cb.bytesOut >= prevOut ? cb.bytesOut - prevOut : 0;
                 uint64_t rxDelta = cb.bytesIn >= prevIn ? cb.bytesIn - prevIn : 0;
 
-                rateThisPoll[pid].txBytesPerSec += uint64_t(txDelta / dtSec);
-                rateThisPoll[pid].rxBytesPerSec += uint64_t(rxDelta / dtSec);
+                Key rkey{pid, iface};
+                rateThisPoll[rkey].txBytesPerSec += uint64_t(txDelta / dtSec);
+                rateThisPoll[rkey].rxBytesPerSec += uint64_t(rxDelta / dtSec);
 
-                auto& cum = m_impl->cumulativeByPid[pid];
+                auto& cum = m_impl->cumulativeByKey[rkey];
                 cum.txBytesTotal += txDelta;
                 cum.rxBytesTotal += rxDelta;
             }
@@ -361,6 +436,7 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
         }
     }
 
+    // --- UDP (ETW) -- not attributable per-interface, see file header ---
     if (m_impl->udpAvailable) {
         std::map<int64_t, uint64_t> rxAccum, txAccum;
         {
@@ -372,28 +448,34 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
         }
 
         for (auto& kv : rxAccum) {
-            rateThisPoll[kv.first].rxBytesPerSec += uint64_t(kv.second / dtSec);
-            m_impl->cumulativeByPid[kv.first].rxBytesTotal += kv.second;
+            Key key{kv.first, kUnattributed};
+            rateThisPoll[key].rxBytesPerSec += uint64_t(kv.second / dtSec);
+            m_impl->cumulativeByKey[key].rxBytesTotal += kv.second;
         }
         for (auto& kv : txAccum) {
-            rateThisPoll[kv.first].txBytesPerSec += uint64_t(kv.second / dtSec);
-            m_impl->cumulativeByPid[kv.first].txBytesTotal += kv.second;
+            Key key{kv.first, kUnattributed};
+            rateThisPoll[key].txBytesPerSec += uint64_t(kv.second / dtSec);
+            m_impl->cumulativeByKey[key].txBytesTotal += kv.second;
         }
     }
 
     m_impl->prevSampleMs = now;
 
-    for (auto& kv : m_impl->cumulativeByPid) {
-        ProcessBandwidthStats s = kv.second;
+    for (auto& kv : m_impl->cumulativeByKey) {
+        ProcessInterfaceBandwidth entry;
+        entry.pid = kv.first.first;
+        entry.interfaceName = kv.first.second;
+        entry.stats = kv.second;
+
         auto rateIt = rateThisPoll.find(kv.first);
         if (rateIt != rateThisPoll.end()) {
-            s.rxBytesPerSec = rateIt->second.rxBytesPerSec;
-            s.txBytesPerSec = rateIt->second.txBytesPerSec;
+            entry.stats.rxBytesPerSec = rateIt->second.rxBytesPerSec;
+            entry.stats.txBytesPerSec = rateIt->second.txBytesPerSec;
         } else {
-            s.rxBytesPerSec = 0;
-            s.txBytesPerSec = 0;
+            entry.stats.rxBytesPerSec = 0;
+            entry.stats.txBytesPerSec = 0;
         }
-        result[kv.first] = s;
+        result.push_back(entry);
     }
 
     return result;

@@ -2,6 +2,7 @@
 
 #include "Types.h"
 #include <map>
+#include <vector>
 #include <string>
 
 class ProcessBandwidthCollector {
@@ -14,7 +15,11 @@ public:
     bool isRunning() const;
     std::string lastError() const;
 
-    std::map<int64_t, ProcessBandwidthStats> collect();
+    // Per-(PID, interface) snapshot: rxBytesPerSec/txBytesPerSec are rates
+    // since the previous call; rxBytesTotal/txBytesTotal are cumulative
+    // since start(). Only entries with currently-tracked TCP/UDP traffic
+    // appear.
+    std::vector<ProcessInterfaceBandwidth> collect();
 
 private:
     class Impl;

@@ -1,12 +1,29 @@
-// Per-process network bandwidth: TCP via Netlink socket-diag with the
-// TCP_INFO extension (the same mechanism `ss -i` uses), no elevated
-// privileges needed. UDP via raw AF_PACKET packet capture matched to
-// locally-open UDP ports -- this REQUIRES root or the CAP_NET_RAW
-// capability, since the kernel has no per-socket byte counter for UDP.
+// Per-process network bandwidth, broken down by interface.
+//
+// TCP: Netlink socket-diag (NETLINK_SOCK_DIAG) with the TCP_INFO
+// extension -- the same mechanism `ss -i` uses, reading
+// tcpi_bytes_acked/tcpi_bytes_received per socket. No elevated privileges
+// needed for your own processes' sockets. Interface attribution comes
+// from mapping each connection's local IP address (reported directly by
+// the kernel in the diag response) to an interface via getifaddrs() --
+// valid for TCP because the kernel resolves a concrete source IP for an
+// established connection even if the application originally bound to
+// the wildcard address (0.0.0.0).
+//
+// UDP: no per-socket cumulative byte counter exists in the kernel for
+// UDP, so this uses a raw AF_PACKET capture matched to locally-open UDP
+// ports -- REQUIRES root or CAP_NET_RAW. Interface attribution here uses
+// the ACTUAL interface each packet was observed on (via AF_PACKET's
+// sockaddr_ll), not an IP-to-interface guess -- UDP sockets very
+// commonly bind to the wildcard address, so unlike TCP there is no
+// single "local IP" to map; the interface a given packet really
+// travelled over is only known at capture time.
 
 #include "ProcessBandwidthCollector.h"
 
 #include <dirent.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <fstream>
 #include <sstream>
 #include <map>
@@ -21,6 +38,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <utility>
 #include <cstring>
 #include <cerrno>
 
@@ -89,9 +107,38 @@ std::map<uint64_t, int64_t> buildInodeToPidMap() {
     return result;
 }
 
+// Maps a local IP address string ("192.168.1.5", "::1", ...) to the
+// interface name that owns it, via getifaddrs(). Refreshed by the caller
+// periodically, not on every single poll (interface addresses rarely
+// change, and getifaddrs() is comparatively cheap but no need to call it
+// every cycle either).
+std::map<std::string, std::string> buildIpToInterfaceMap() {
+    std::map<std::string, std::string> result;
+    struct ifaddrs* ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) != 0) return result;
+
+    for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr) continue;
+        char buf[INET6_ADDRSTRLEN] = {0};
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+            if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf))) result[buf] = ifa->ifa_name;
+        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
+            auto* sa6 = reinterpret_cast<struct sockaddr_in6*>(ifa->ifa_addr);
+            if (inet_ntop(AF_INET6, &sa6->sin6_addr, buf, sizeof(buf))) result[buf] = ifa->ifa_name;
+        }
+    }
+    freeifaddrs(ifaddr);
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// TCP: Netlink socket-diag with TCP_INFO
+// ---------------------------------------------------------------------------
 struct SocketBandwidth {
     uint64_t bytesAcked = 0;
     uint64_t bytesReceived = 0;
+    std::string localIp; // for interface attribution
 };
 
 bool queryTcpInfoByFamily(int family, std::map<uint64_t, SocketBandwidth>& out, std::string& errorOut) {
@@ -147,6 +194,19 @@ bool queryTcpInfoByFamily(int family, std::map<uint64_t, SocketBandwidth>& out, 
             }
 
             auto* diag = reinterpret_cast<struct inet_diag_msg*>(NLMSG_DATA(nlh));
+
+            // Local IP address, straight from the diag response -- valid
+            // for interface attribution since TCP has a concrete resolved
+            // source IP once a connection is established.
+            char ipBuf[INET6_ADDRSTRLEN] = {0};
+            if (family == AF_INET) {
+                struct in_addr addr{};
+                addr.s_addr = diag->id.idiag_src[0];
+                inet_ntop(AF_INET, &addr, ipBuf, sizeof(ipBuf));
+            } else {
+                inet_ntop(AF_INET6, &diag->id.idiag_src, ipBuf, sizeof(ipBuf));
+            }
+
             int payloadLen = static_cast<int>(nlh->nlmsg_len) - static_cast<int>(NLMSG_LENGTH(sizeof(struct inet_diag_msg)));
             if (payloadLen <= 0) continue;
 
@@ -161,6 +221,7 @@ bool queryTcpInfoByFamily(int family, std::map<uint64_t, SocketBandwidth>& out, 
                 SocketBandwidth sb;
                 sb.bytesAcked = info->tcpi_bytes_acked;
                 sb.bytesReceived = info->tcpi_bytes_received;
+                sb.localIp = ipBuf;
                 out[diag->idiag_inode] = sb;
             }
         }
@@ -170,13 +231,26 @@ bool queryTcpInfoByFamily(int family, std::map<uint64_t, SocketBandwidth>& out, 
     return true;
 }
 
-struct UdpPortAccum {
-    std::mutex mutex;
-    std::map<uint16_t, uint64_t> bytesAsSourcePort;
-    std::map<uint16_t, uint64_t> bytesAsDestPort;
+// ---------------------------------------------------------------------------
+// UDP: raw AF_PACKET capture, attributed by the interface each packet was
+// actually observed on (not by IP address -- see file header comment).
+// ---------------------------------------------------------------------------
+struct PortIfaceKey {
+    uint16_t port = 0;
+    std::string iface;
+    bool operator<(const PortIfaceKey& o) const {
+        if (port != o.port) return port < o.port;
+        return iface < o.iface;
+    }
 };
 
-void udpCaptureLoop(int fd, bool isIPv6, UdpPortAccum* accum, std::atomic<bool>* stopFlag) {
+struct UdpAccum {
+    std::mutex mutex;
+    std::map<PortIfaceKey, uint64_t> bytesAsSourcePort; // candidate TX
+    std::map<PortIfaceKey, uint64_t> bytesAsDestPort;   // candidate RX
+};
+
+void udpCaptureLoop(int fd, bool isIPv6, UdpAccum* accum, std::atomic<bool>* stopFlag) {
     std::vector<unsigned char> buf(kCaptureBufSize);
 
     while (!stopFlag->load()) {
@@ -187,11 +261,18 @@ void udpCaptureLoop(int fd, bool isIPv6, UdpPortAccum* accum, std::atomic<bool>*
         if (pr <= 0) continue;
         if (!(pfd.revents & POLLIN)) continue;
 
-        ssize_t n = recv(fd, buf.data(), buf.size(), 0);
+        struct sockaddr_ll llAddr{};
+        socklen_t llLen = sizeof(llAddr);
+        ssize_t n = recvfrom(fd, buf.data(), buf.size(), 0,
+                              reinterpret_cast<struct sockaddr*>(&llAddr), &llLen);
         if (n <= 0) {
             if (errno == EINTR) continue;
             break;
         }
+
+        char ifNameBuf[IF_NAMESIZE] = {0};
+        std::string ifaceName = if_indextoname(static_cast<unsigned>(llAddr.sll_ifindex), ifNameBuf)
+                                     ? ifNameBuf : "unknown";
 
         const unsigned char* data = buf.data();
         size_t len = static_cast<size_t>(n);
@@ -214,8 +295,8 @@ void udpCaptureLoop(int fd, bool isIPv6, UdpPortAccum* accum, std::atomic<bool>*
         uint16_t dstPort = (uint16_t(data[udpOffset + 2]) << 8) | data[udpOffset + 3];
 
         std::lock_guard<std::mutex> lock(accum->mutex);
-        accum->bytesAsSourcePort[srcPort] += len;
-        accum->bytesAsDestPort[dstPort] += len;
+        accum->bytesAsSourcePort[{srcPort, ifaceName}] += len;
+        accum->bytesAsDestPort[{dstPort, ifaceName}] += len;
     }
 }
 
@@ -266,9 +347,11 @@ public:
     std::atomic<bool> udpStopFlag{false};
     std::thread udpThread4;
     std::thread udpThread6;
-    UdpPortAccum udpAccum;
+    UdpAccum udpAccum;
 
-    std::map<int64_t, ProcessBandwidthStats> cumulativeByPid;
+    // Running totals per (pid, interface) -- only ever incremented by
+    // newly-computed deltas each poll, never overwritten.
+    std::map<std::pair<int64_t, std::string>, ProcessBandwidthStats> cumulativeByKey;
 
     ~Impl() { stopUdpCapture(); }
 
@@ -333,7 +416,7 @@ bool ProcessBandwidthCollector::start() {
     m_impl->udpAvailable = udpAvailable;
     m_impl->running = true;
     m_impl->prevBySocket.clear();
-    m_impl->cumulativeByPid.clear();
+    m_impl->cumulativeByKey.clear();
     m_impl->prevSampleMs = nowMs();
     return true;
 }
@@ -346,16 +429,18 @@ void ProcessBandwidthCollector::stop() {
 bool ProcessBandwidthCollector::isRunning() const { return m_impl->running; }
 std::string ProcessBandwidthCollector::lastError() const { return m_impl->error; }
 
-std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
-    std::map<int64_t, ProcessBandwidthStats> result;
+std::vector<ProcessInterfaceBandwidth> ProcessBandwidthCollector::collect() {
+    std::vector<ProcessInterfaceBandwidth> result;
     if (!m_impl->running) return result;
 
     int64_t now = nowMs();
     double dtSec = m_impl->prevSampleMs ? (now - m_impl->prevSampleMs) / 1000.0 : 1.0;
     if (dtSec <= 0) dtSec = 1.0;
 
-    std::map<int64_t, ProcessBandwidthStats> rateThisPoll;
+    using Key = std::pair<int64_t, std::string>; // (pid, interface)
+    std::map<Key, ProcessBandwidthStats> rateThisPoll;
 
+    // --- TCP (Netlink), attributed by local-IP -> interface ---
     if (m_impl->tcpAvailable) {
         std::map<uint64_t, SocketBandwidth> current;
         std::string err;
@@ -364,6 +449,7 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
 
         if (ok4 || ok6) {
             std::map<uint64_t, int64_t> inodeToPid = buildInodeToPidMap();
+            std::map<std::string, std::string> ipToIface = buildIpToInterfaceMap();
 
             for (auto& kv : current) {
                 uint64_t inode = kv.first;
@@ -372,6 +458,10 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
                 auto pidIt = inodeToPid.find(inode);
                 if (pidIt == inodeToPid.end()) continue;
                 int64_t pid = pidIt->second;
+
+                std::string iface = "(unattributed)";
+                auto ifaceIt = ipToIface.find(sb.localIp);
+                if (ifaceIt != ipToIface.end()) iface = ifaceIt->second;
 
                 uint64_t prevAcked = 0, prevReceived = 0;
                 auto prevIt = m_impl->prevBySocket.find(inode);
@@ -383,10 +473,11 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
                 uint64_t txDelta = sb.bytesAcked >= prevAcked ? sb.bytesAcked - prevAcked : 0;
                 uint64_t rxDelta = sb.bytesReceived >= prevReceived ? sb.bytesReceived - prevReceived : 0;
 
-                rateThisPoll[pid].txBytesPerSec += uint64_t(txDelta / dtSec);
-                rateThisPoll[pid].rxBytesPerSec += uint64_t(rxDelta / dtSec);
+                Key key{pid, iface};
+                rateThisPoll[key].txBytesPerSec += uint64_t(txDelta / dtSec);
+                rateThisPoll[key].rxBytesPerSec += uint64_t(rxDelta / dtSec);
 
-                auto& cum = m_impl->cumulativeByPid[pid];
+                auto& cum = m_impl->cumulativeByKey[key];
                 cum.txBytesTotal += txDelta;
                 cum.rxBytesTotal += rxDelta;
             }
@@ -395,8 +486,9 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
         }
     }
 
+    // --- UDP (raw capture), attributed by observed capture interface ---
     if (m_impl->udpAvailable) {
-        std::map<uint16_t, uint64_t> asSrc, asDst;
+        std::map<PortIfaceKey, uint64_t> asSrc, asDst;
         {
             std::lock_guard<std::mutex> lock(m_impl->udpAccum.mutex);
             asSrc = m_impl->udpAccum.bytesAsSourcePort;
@@ -407,36 +499,39 @@ std::map<int64_t, ProcessBandwidthStats> ProcessBandwidthCollector::collect() {
 
         std::map<uint16_t, int64_t> portToPid = buildUdpPortToPidMap();
 
-        for (auto& kv : portToPid) {
-            uint16_t port = kv.first;
-            int64_t pid = kv.second;
-
-            uint64_t rxBytes = asDst.count(port) ? asDst[port] : 0;
-            uint64_t txBytes = asSrc.count(port) ? asSrc[port] : 0;
-            if (rxBytes == 0 && txBytes == 0) continue;
-
-            rateThisPoll[pid].rxBytesPerSec += uint64_t(rxBytes / dtSec);
-            rateThisPoll[pid].txBytesPerSec += uint64_t(txBytes / dtSec);
-
-            auto& cum = m_impl->cumulativeByPid[pid];
-            cum.rxBytesTotal += rxBytes;
-            cum.txBytesTotal += txBytes;
+        for (auto& kv : asDst) {
+            auto pidIt = portToPid.find(kv.first.port);
+            if (pidIt == portToPid.end()) continue;
+            Key key{pidIt->second, kv.first.iface};
+            rateThisPoll[key].rxBytesPerSec += uint64_t(kv.second / dtSec);
+            m_impl->cumulativeByKey[key].rxBytesTotal += kv.second;
+        }
+        for (auto& kv : asSrc) {
+            auto pidIt = portToPid.find(kv.first.port);
+            if (pidIt == portToPid.end()) continue;
+            Key key{pidIt->second, kv.first.iface};
+            rateThisPoll[key].txBytesPerSec += uint64_t(kv.second / dtSec);
+            m_impl->cumulativeByKey[key].txBytesTotal += kv.second;
         }
     }
 
     m_impl->prevSampleMs = now;
 
-    for (auto& kv : m_impl->cumulativeByPid) {
-        ProcessBandwidthStats s = kv.second;
+    for (auto& kv : m_impl->cumulativeByKey) {
+        ProcessInterfaceBandwidth entry;
+        entry.pid = kv.first.first;
+        entry.interfaceName = kv.first.second;
+        entry.stats = kv.second;
+
         auto rateIt = rateThisPoll.find(kv.first);
         if (rateIt != rateThisPoll.end()) {
-            s.rxBytesPerSec = rateIt->second.rxBytesPerSec;
-            s.txBytesPerSec = rateIt->second.txBytesPerSec;
+            entry.stats.rxBytesPerSec = rateIt->second.rxBytesPerSec;
+            entry.stats.txBytesPerSec = rateIt->second.txBytesPerSec;
         } else {
-            s.rxBytesPerSec = 0;
-            s.txBytesPerSec = 0;
+            entry.stats.rxBytesPerSec = 0;
+            entry.stats.txBytesPerSec = 0;
         }
-        result[kv.first] = s;
+        result.push_back(entry);
     }
 
     return result;

@@ -150,7 +150,10 @@ GpuInfo collectTegraGpu() {
     if (loadFile) {
         int permille = 0;
         loadFile >> permille;
-        if (!loadFile.fail()) info.loadPercent = permille / 10.0;
+        if (!loadFile.fail()) {
+            double percent = permille / 10.0;
+            info.loadPercent = (std::min)(100.0, (std::max)(0.0, percent));
+        }
     } else {
         DIR* dir = opendir("/sys/class/devfreq");
         if (dir) {
@@ -163,9 +166,18 @@ GpuInfo collectTegraGpu() {
                 std::string base = "/sys/class/devfreq/" + node;
                 std::ifstream loadNode(base + "/load");
                 std::ifstream busyNode(base + "/device/load");
-                double val = 0.0;
-                if (loadNode) { loadNode >> val; if (!loadNode.fail()) info.loadPercent = val; }
-                else if (busyNode) { busyNode >> val; if (!busyNode.fail()) info.loadPercent = val; }
+                double permille = 0.0;
+                bool haveLoad = false;
+                if (loadNode) { loadNode >> permille; haveLoad = !loadNode.fail(); }
+                else if (busyNode) { busyNode >> permille; haveLoad = !busyNode.fail(); }
+                // Same 0-1000 permille scale as /sys/devices/gpu.0/load above
+                // (the devfreq "load" attribute uses the same convention on
+                // newer JetPack versions) -- without this division the UI
+                // showed e.g. "150%" for an actual 15% load.
+                if (haveLoad) {
+                    double percent = permille / 10.0;
+                    info.loadPercent = (std::min)(100.0, (std::max)(0.0, percent));
+                }
 
                 std::ifstream curFreq(base + "/cur_freq");
                 if (curFreq) {

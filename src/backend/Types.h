@@ -129,6 +129,17 @@ struct ProcessBandwidthStats {
     uint64_t txBytesTotal = 0;
 };
 
+// Per-process bandwidth broken down by network interface. interfaceName
+// is the OS interface name ("eth0", "wlan0", "Ethernet"...) when it could
+// be determined, or "(unattributed)" when it couldn't -- e.g. Windows UDP
+// traffic via ETW, where the provider doesn't reliably expose which
+// interface a packet used (see ProcessBandwidthBackendWin.cpp).
+struct ProcessInterfaceBandwidth {
+    int64_t pid = 0;
+    std::string interfaceName;
+    ProcessBandwidthStats stats;
+};
+
 struct GpuInfo {
     std::string name;
     std::string vendor;
