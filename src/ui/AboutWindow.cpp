@@ -5,7 +5,7 @@
 #include <string>
 
 #ifndef TM_VERSION_STRING
-#define TM_VERSION_STRING "1.0.1"
+#define TM_VERSION_STRING "1.1.0"
 #endif
 
 namespace {

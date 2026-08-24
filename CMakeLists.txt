@@ -100,7 +100,7 @@ target_include_directories(implot PUBLIC ${implot_SOURCE_DIR})
 target_link_libraries(implot PUBLIC imgui)
 
 # ---------------------------------------------------------------------------
-# TaskManager sources
+# CtTaskManager sources
 # ---------------------------------------------------------------------------
 set(TM_SOURCES
     src/main.cpp
