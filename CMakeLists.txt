@@ -75,6 +75,21 @@ FetchContent_Declare(implot
 )
 FetchContent_MakeAvailable(implot)
 
+# FTXUI: cross-platform terminal UI library, powers --tui mode (a
+# separate, keyboard-driven view onto the exact same backend collectors
+# used by the graphical mode). Unlike Dear ImGui, FTXUI ships its own
+# working CMakeLists.txt, so FetchContent_MakeAvailable() alone gives us
+# ready-to-link ftxui::screen / ftxui::dom / ftxui::component targets.
+FetchContent_Declare(ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+    GIT_TAG        v6.1.9
+)
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(ftxui)
+
 # Dear ImGui doesn't ship its own CMakeLists.txt for the core lib + GLFW/GL3
 # backends, so build them as a small static lib ourselves.
 add_library(imgui STATIC
@@ -114,6 +129,7 @@ set(TM_SOURCES
     src/ui/SettingsWindow.cpp
     src/ui/AboutWindow.cpp
     src/backend/FormatUtils.cpp
+    src/cli/TuiApp.cpp
 )
 
 set(TM_HEADERS
@@ -135,6 +151,7 @@ set(TM_HEADERS
     src/ui/PerformanceTab.h
     src/ui/ProcessesTab.h
     src/ui/SettingsWindow.h
+    src/cli/TuiApp.h
 )
 
 if(WIN32)
@@ -168,7 +185,8 @@ target_include_directories(CtTaskManager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/backend
 )
 
-target_link_libraries(CtTaskManager PRIVATE imgui implot)
+target_link_libraries(CtTaskManager PRIVATE imgui implot
+    ftxui::screen ftxui::dom ftxui::component)
 
 target_compile_definitions(CtTaskManager PRIVATE
     $<$<BOOL:${TM_IS_JETSON}>:TM_IS_JETSON>

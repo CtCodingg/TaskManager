@@ -77,9 +77,34 @@ table's "User" column, relies on NSS, which breaks under full static linking).
 
 | Flag | Effect |
 |---|---|
-| *(none)* | Normal startup. No admin/elevated rights on either platform. |
+| *(none)* | Normal startup (graphical). No admin/elevated rights on either platform. |
 | `-h`, `--help` | Prints usage and exits, no window opens. |
-| `--track-bandwidth` | Adds the Bandwidth tab. Windows: triggers one UAC prompt (declining falls back to a normal launch without the tab). Linux: TCP works unprivileged; UDP needs `sudo setcap cap_net_raw+ep <binary>` or root. |
+| `--tui` | Runs as an htop-style terminal UI instead of opening a window (see below). |
+| `--track-bandwidth` | Adds the Bandwidth tab. Windows: triggers one UAC prompt (declining falls back to a normal launch without the tab). Linux: TCP works unprivileged; UDP needs `sudo setcap cap_net_raw+ep <binary>` or root. Graphical mode only for now -- ignored (no elevation prompt) when combined with `--tui`. |
+
+## Terminal UI mode (`--tui`)
+
+An htop-style, keyboard-driven view built on [FTXUI](https://github.com/ArthurSonzogni/FTXUI),
+running the exact same backend collectors as the graphical mode -- just a
+different renderer.
+
+**Currently implemented:** the Processes view -- CPU (total + per-core)
+and memory meter bars, a sortable/filterable process table, and
+kill-with-confirmation. This is the view that actually defines "looks
+like htop".
+
+**Not yet implemented:** Performance/Network/Connections/Bandwidth as TUI
+tabs. Pressing 2-5 shows a status message rather than switching views;
+`--track-bandwidth` is accepted but currently unused in `--tui` mode.
+Adding one follows the same pattern as Processes: a poll-thread call into
+the matching collector (`SystemStatsCollector`, `NetworkStatsCollector`,
+`ProcessConnectionCollector`, `ProcessBandwidthCollector` -- all already
+exist and are shared with the graphical mode) plus a render function in
+`src/cli/TuiApp.cpp` alongside the current one.
+
+**Keybindings:** `q` quit · arrows/PageUp/PageDown/Home/End navigate ·
+`/` search (Enter/Esc to exit) · `k` kill selected process (`y` to
+confirm) · `c` sort by CPU · `m` sort by memory · `p` sort by PID.
 
 ## Notes & extension points
 

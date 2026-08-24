@@ -24,5 +24,17 @@ private:
     char m_filterBuf[128] = "";
     int m_selectedRow = -1;
 
-    void applySort(ImGuiTableSortSpecs* sortSpecs);
+    // Remembers the user's last chosen sort column/direction so it can be
+    // RE-APPLIED every time updateData() replaces m_processes with fresh,
+    // unsorted data from the collector (roughly once a second). ImGui's
+    // own SpecsDirty flag only fires when the USER changes the sort
+    // column/direction, not when the underlying data changes -- without
+    // this, the table would revert to raw collector order right after
+    // each poll, undoing the sort within a second of clicking a header.
+    // -1 = not yet established (picks up the CPU-descending default sort
+    // via ImGuiTableColumnFlags_DefaultSort on the first frame).
+    int m_sortColumn = -1;
+    bool m_sortAscending = false;
+
+    void applySort(int column, bool ascending);
 };

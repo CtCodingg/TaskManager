@@ -1,5 +1,6 @@
 #include "App.h"
 #include "Theme.h"
+#include "cli/TuiApp.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -31,6 +32,7 @@ void glfwErrorCallback(int error, const char* description) {
 
 // Command-line flags this app recognizes.
 constexpr const char* kTrackBandwidthFlag = "--track-bandwidth";
+constexpr const char* kTuiFlag = "--tui";
 constexpr const char* kHelpFlagLong = "--help";
 constexpr const char* kHelpFlagShort = "-h";
 
@@ -50,8 +52,15 @@ void printHelp() {
         "Options:\n"
         "  -h, --help          Show this help message and exit.\n"
         "\n"
+        "  --tui               Run as an htop-style terminal UI instead of\n"
+        "                      opening a graphical window. Runs the same\n"
+        "                      backend as the graphical mode; currently the\n"
+        "                      Processes view only (sortable/filterable table,\n"
+        "                      CPU/memory meter bars, kill-with-confirmation).\n"
+        "                      Press '1' inside for Processes, 'q' to quit.\n"
+        "\n"
         "  --track-bandwidth   Enable the Bandwidth tab (per-process download/\n"
-        "                      upload, TCP + UDP).\n"
+        "                      upload, TCP + UDP). Graphical mode only for now.\n"
         "\n"
         "                      Windows: requires Administrator rights and\n"
         "                      triggers a UAC prompt on launch; cancelling the\n"
@@ -121,15 +130,27 @@ int main(int argc, char* argv[]) {
     }
 
     bool trackBandwidth = hasFlag(argc, argv, kTrackBandwidthFlag);
+    bool tuiMode = hasFlag(argc, argv, kTuiFlag);
 
 #ifdef _WIN32
-    if (trackBandwidth && !isProcessElevated()) {
+    // Skip elevation entirely in TUI mode: --track-bandwidth isn't wired
+    // into the TUI's tabs yet (see runTuiApp's doc comment), so there's
+    // nothing that would actually need the elevated rights -- prompting
+    // for UAC here would be misleading.
+    if (trackBandwidth && !tuiMode && !isProcessElevated()) {
         if (relaunchElevated(argc, argv)) {
             return 0; // the elevated instance takes over; this one exits quietly
         }
         trackBandwidth = false; // elevation cancelled/failed -- run normally, without the flag
     }
 #endif
+
+    if (tuiMode) {
+        // Terminal UI mode: no window, no OpenGL, no GLFW at all -- just
+        // the backend collectors driving an FTXUI terminal session. See
+        // src/cli/TuiApp.cpp.
+        return runTuiApp(trackBandwidth);
+    }
 
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {

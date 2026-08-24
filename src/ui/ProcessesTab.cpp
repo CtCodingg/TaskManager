@@ -34,6 +34,10 @@ Theme::Rgb colorForState(const std::string& state) {
 
 void ProcessesTab::updateData(std::vector<ProcessInfo> processes) {
     m_processes = std::move(processes);
+    // Re-apply the last-known sort to this fresh data -- see the member
+    // comment in ProcessesTab.h for why this is necessary (ImGui's
+    // SpecsDirty flag doesn't fire just because the data changed).
+    if (m_sortColumn >= 0) applySort(m_sortColumn, m_sortAscending);
 }
 
 std::string ProcessesTab::nameForPid(int64_t pid) const {
@@ -43,26 +47,31 @@ std::string ProcessesTab::nameForPid(int64_t pid) const {
     return "(pid " + std::to_string(pid) + ")";
 }
 
-void ProcessesTab::applySort(ImGuiTableSortSpecs* sortSpecs) {
-    if (!sortSpecs || sortSpecs->SpecsCount == 0) return;
-    const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
-    bool ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
-
-    auto cmp = [&](const ProcessInfo& a, const ProcessInfo& b) -> bool {
-        bool less = false;
-        switch (spec.ColumnIndex) {
-            case 0: less = a.pid < b.pid; break;
-            case 1: less = a.name < b.name; break;
-            case 2: less = a.user < b.user; break;
-            case 3: less = a.state < b.state; break;
-            case 4: less = a.cpuPercent < b.cpuPercent; break;
-            case 5: less = a.memRssBytes < b.memRssBytes; break;
-            case 6: less = a.threadCount < b.threadCount; break;
-            default: less = a.pid < b.pid; break;
+void ProcessesTab::applySort(int column, bool ascending) {
+    // Pure "x's key < y's key" relation, used as-is for ascending and with
+    // swapped arguments for descending. Negating this instead (as an
+    // earlier version did) breaks strict weak ordering whenever two
+    // elements tie on the sort key -- e.g. two processes both at 0.0%
+    // CPU, which is common right after startup -- and std::stable_sort
+    // (or MSVC's debug STL specifically) can throw "invalid comparator"
+    // as a result.
+    auto keyLess = [column](const ProcessInfo& x, const ProcessInfo& y) -> bool {
+        switch (column) {
+            case 0: return x.pid < y.pid;
+            case 1: return x.name < y.name;
+            case 2: return x.user < y.user;
+            case 3: return x.state < y.state;
+            case 4: return x.cpuPercent < y.cpuPercent;
+            case 5: return x.memRssBytes < y.memRssBytes;
+            case 6: return x.threadCount < y.threadCount;
+            default: return x.pid < y.pid;
         }
-        return ascending ? less : !less && a.pid != b.pid;
     };
-    std::stable_sort(m_processes.begin(), m_processes.end(), cmp);
+
+    std::stable_sort(m_processes.begin(), m_processes.end(),
+        [&](const ProcessInfo& a, const ProcessInfo& b) {
+            return ascending ? keyLess(a, b) : keyLess(b, a);
+        });
 }
 
 void ProcessesTab::draw(ProcessCollector& collector) {
@@ -96,7 +105,13 @@ void ProcessesTab::draw(ProcessCollector& collector) {
         ImGui::TableSetupColumn("Name");
         ImGui::TableSetupColumn("User");
         ImGui::TableSetupColumn("State");
-        ImGui::TableSetupColumn("CPU %", ImGuiTableColumnFlags_WidthFixed, 80);
+        // DefaultSort + PreferSortDescending: matches the Qt edition's
+        // default (sortByColumn(ColCpu, Qt::DescendingOrder)) -- the
+        // table opens already sorted by CPU% descending, not raw
+        // collector order.
+        ImGui::TableSetupColumn("CPU %", ImGuiTableColumnFlags_WidthFixed |
+                                 ImGuiTableColumnFlags_DefaultSort |
+                                 ImGuiTableColumnFlags_PreferSortDescending, 80);
         ImGui::TableSetupColumn("Memory", ImGuiTableColumnFlags_WidthFixed, 90);
         ImGui::TableSetupColumn("Threads", ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Command");
@@ -104,8 +119,11 @@ void ProcessesTab::draw(ProcessCollector& collector) {
         ImGui::TableHeadersRow();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs()) {
-            if (sortSpecs->SpecsDirty) {
-                applySort(sortSpecs);
+            if (sortSpecs->SpecsDirty && sortSpecs->SpecsCount > 0) {
+                const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+                m_sortColumn = spec.ColumnIndex;
+                m_sortAscending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+                applySort(m_sortColumn, m_sortAscending);
                 sortSpecs->SpecsDirty = false;
             }
         }
