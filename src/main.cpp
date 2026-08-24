@@ -53,14 +53,14 @@ void printHelp() {
         "  -h, --help          Show this help message and exit.\n"
         "\n"
         "  --tui               Run as an htop-style terminal UI instead of\n"
-        "                      opening a graphical window. Runs the same\n"
-        "                      backend as the graphical mode; currently the\n"
-        "                      Processes view only (sortable/filterable table,\n"
-        "                      CPU/memory meter bars, kill-with-confirmation).\n"
-        "                      Press '1' inside for Processes, 'q' to quit.\n"
+        "                      opening a graphical window. Same tabs as the\n"
+        "                      graphical mode: Processes, Performance, Network,\n"
+        "                      Connections, and (with --track-bandwidth)\n"
+        "                      Bandwidth. Press 1-5 to switch tabs, 'q' to quit.\n"
         "\n"
-        "  --track-bandwidth   Enable the Bandwidth tab (per-process download/\n"
-        "                      upload, TCP + UDP). Graphical mode only for now.\n"
+        "  --track-bandwidth   Enable the Bandwidth tab/view (per-process download/\n"
+        "                      upload, TCP + UDP). Works in both graphical and\n"
+        "                      --tui mode.\n"
         "\n"
         "                      Windows: requires Administrator rights and\n"
         "                      triggers a UAC prompt on launch; cancelling the\n"
@@ -133,11 +133,11 @@ int main(int argc, char* argv[]) {
     bool tuiMode = hasFlag(argc, argv, kTuiFlag);
 
 #ifdef _WIN32
-    // Skip elevation entirely in TUI mode: --track-bandwidth isn't wired
-    // into the TUI's tabs yet (see runTuiApp's doc comment), so there's
-    // nothing that would actually need the elevated rights -- prompting
-    // for UAC here would be misleading.
-    if (trackBandwidth && !tuiMode && !isProcessElevated()) {
+    // The Bandwidth tab/view's Windows backend (TCP EStats + ETW) needs
+    // admin rights in both graphical and TUI mode now that TUI wires up
+    // bandwidth tracking too. Only ask for elevation when the flag was
+    // actually passed -- default launches never see a UAC prompt.
+    if (trackBandwidth && !isProcessElevated()) {
         if (relaunchElevated(argc, argv)) {
             return 0; // the elevated instance takes over; this one exits quietly
         }

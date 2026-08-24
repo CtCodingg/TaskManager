@@ -80,31 +80,33 @@ table's "User" column, relies on NSS, which breaks under full static linking).
 | *(none)* | Normal startup (graphical). No admin/elevated rights on either platform. |
 | `-h`, `--help` | Prints usage and exits, no window opens. |
 | `--tui` | Runs as an htop-style terminal UI instead of opening a window (see below). |
-| `--track-bandwidth` | Adds the Bandwidth tab. Windows: triggers one UAC prompt (declining falls back to a normal launch without the tab). Linux: TCP works unprivileged; UDP needs `sudo setcap cap_net_raw+ep <binary>` or root. Graphical mode only for now -- ignored (no elevation prompt) when combined with `--tui`. |
+| `--track-bandwidth` | Adds the Bandwidth tab/view. Windows: triggers one UAC prompt (declining falls back to a normal launch without it). Linux: TCP works unprivileged; UDP needs `sudo setcap cap_net_raw+ep <binary>` or root. Works in both graphical and `--tui` mode. |
 
 ## Terminal UI mode (`--tui`)
 
 An htop-style, keyboard-driven view built on [FTXUI](https://github.com/ArthurSonzogni/FTXUI),
 running the exact same backend collectors as the graphical mode -- just a
-different renderer.
+different renderer. Same five tabs as the graphical mode, switched with
+number keys 1-5 (5 only appears with `--track-bandwidth`). A persistent
+header (title + CPU total/per-core + memory meter bars) stays visible
+across every tab, matching htop's own always-on-top meters.
 
-**Currently implemented:** the Processes view -- CPU (total + per-core)
-and memory meter bars, a sortable/filterable process table, and
-kill-with-confirmation. This is the view that actually defines "looks
-like htop".
+- **Processes** -- sortable/filterable table, color-coded CPU%,
+  kill-with-confirmation. The view that actually defines "looks like htop".
+- **Performance** -- memory/swap detail, GPU, disk volumes, disk I/O.
+- **Network** -- per-interface bandwidth, link speed, drop%.
+- **Connections** -- every TCP/UDP connection, filterable.
+- **Bandwidth** (needs `--track-bandwidth`) -- per-process, per-interface
+  download/upload, same elevation rules as the graphical mode.
 
-**Not yet implemented:** Performance/Network/Connections/Bandwidth as TUI
-tabs. Pressing 2-5 shows a status message rather than switching views;
-`--track-bandwidth` is accepted but currently unused in `--tui` mode.
-Adding one follows the same pattern as Processes: a poll-thread call into
-the matching collector (`SystemStatsCollector`, `NetworkStatsCollector`,
-`ProcessConnectionCollector`, `ProcessBandwidthCollector` -- all already
-exist and are shared with the graphical mode) plus a render function in
-`src/cli/TuiApp.cpp` alongside the current one.
+**Keybindings:** `q` quit · `1`-`5` switch tabs · arrows/PageUp/PageDown/
+Home/End navigate or scroll · `/` search (Processes and Connections tabs;
+Enter/Esc to exit) · `k` kill selected process (Processes tab, `y` to
+confirm) · `c`/`m`/`p` sort by CPU/memory/PID (Processes tab).
 
-**Keybindings:** `q` quit · arrows/PageUp/PageDown/Home/End navigate ·
-`/` search (Enter/Esc to exit) · `k` kill selected process (`y` to
-confirm) · `c` sort by CPU · `m` sort by memory · `p` sort by PID.
+**Simplifications versus the graphical mode:** the Bandwidth view is a
+flat, process-then-interface-sorted list rather than the graphical
+mode's expandable tree; Network/Performance don't have a text filter.
 
 ## Notes & extension points
 
