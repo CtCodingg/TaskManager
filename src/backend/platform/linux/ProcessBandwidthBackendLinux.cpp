@@ -330,6 +330,61 @@ std::map<uint16_t, int64_t> buildUdpPortToPidMap() {
     return result;
 }
 
+// --- Fast-refreshing port->pid cache with a short TTL ---------------------
+//
+// buildUdpPortToPidMap() above reflects only currently-open sockets. Many
+// UDP senders (heartbeats, telemetry, one-shot lookups) open a socket,
+// send, and close it again within milliseconds -- far faster than the
+// ~2 second collect() poll interval. If we only ever looked up ports at
+// collect() time, that traffic would be captured (the packet was seen)
+// but end up unattributable (the socket is already gone by the time we
+// scan /proc/net/udp), and silently vanish from the results.
+//
+// Fix: a dedicated thread refreshes a port->pid map every ~400ms
+// (independent of collect()'s ~2s cadence) and remembers each mapping
+// for a short grace period (kPortCacheTtlMs) after the socket itself
+// disappears from /proc/net/udp. This catches short-lived sockets that
+// existed for at least one ~400ms scan window, at the minor cost of
+// very rarely attributing a just-reused ephemeral port to the previous
+// (now-closed) owner for a few seconds -- an acceptable trade-off for a
+// monitoring tool, not an exact accounting system.
+constexpr int kPortCacheScanIntervalMs = 400;
+constexpr int kPortCacheTtlMs = 8000;
+
+struct CachedPidEntry {
+    int64_t pid = 0;
+    std::chrono::steady_clock::time_point lastSeenAlive;
+};
+
+struct UdpPortPidCache {
+    std::mutex mutex;
+    std::map<uint16_t, CachedPidEntry> entries;
+};
+
+void udpPortScanLoop(UdpPortPidCache* cache, std::atomic<bool>* stopFlag) {
+    while (!stopFlag->load()) {
+        auto live = buildUdpPortToPidMap();
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(cache->mutex);
+            for (auto& kv : live) {
+                cache->entries[kv.first] = CachedPidEntry{kv.second, now};
+            }
+            for (auto it = cache->entries.begin(); it != cache->entries.end();) {
+                if (now - it->second.lastSeenAlive > std::chrono::milliseconds(kPortCacheTtlMs)) {
+                    it = cache->entries.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        for (int i = 0; i < kPortCacheScanIntervalMs / 100 && !stopFlag->load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+}
+
 } // namespace
 
 class ProcessBandwidthCollector::Impl {
@@ -348,6 +403,14 @@ public:
     std::thread udpThread4;
     std::thread udpThread6;
     UdpAccum udpAccum;
+
+    // Fast-refreshing port->pid cache with a short TTL -- see the
+    // udpPortScanLoop() comment above for why this exists (catching
+    // short-lived UDP sockets that close faster than collect()'s poll
+    // interval). Runs on its own thread, independent of the packet
+    // capture threads and of collect()'s cadence.
+    UdpPortPidCache udpPortCache;
+    std::thread udpPortScanThread;
 
     // Running totals per (pid, interface) -- only ever incremented by
     // newly-computed deltas each poll, never overwritten.
@@ -372,6 +435,7 @@ public:
         udpStopFlag.store(false);
         if (udpFd4 >= 0) udpThread4 = std::thread(udpCaptureLoop, udpFd4, false, &udpAccum, &udpStopFlag);
         if (udpFd6 >= 0) udpThread6 = std::thread(udpCaptureLoop, udpFd6, true, &udpAccum, &udpStopFlag);
+        udpPortScanThread = std::thread(udpPortScanLoop, &udpPortCache, &udpStopFlag);
         return true;
     }
 
@@ -379,6 +443,7 @@ public:
         udpStopFlag.store(true);
         if (udpThread4.joinable()) udpThread4.join();
         if (udpThread6.joinable()) udpThread6.join();
+        if (udpPortScanThread.joinable()) udpPortScanThread.join();
         if (udpFd4 >= 0) { close(udpFd4); udpFd4 = -1; }
         if (udpFd6 >= 0) { close(udpFd6); udpFd6 = -1; }
     }
@@ -497,7 +562,11 @@ std::vector<ProcessInterfaceBandwidth> ProcessBandwidthCollector::collect() {
             m_impl->udpAccum.bytesAsDestPort.clear();
         }
 
-        std::map<uint16_t, int64_t> portToPid = buildUdpPortToPidMap();
+        std::map<uint16_t, int64_t> portToPid;
+        {
+            std::lock_guard<std::mutex> lock(m_impl->udpPortCache.mutex);
+            for (auto& kv : m_impl->udpPortCache.entries) portToPid[kv.first] = kv.second.pid;
+        }
 
         for (auto& kv : asDst) {
             auto pidIt = portToPid.find(kv.first.port);
